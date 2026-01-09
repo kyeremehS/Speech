@@ -1,0 +1,11 @@
+torch>=2.0.0
+torchaudio>=2.0.0
+transformers>=4.36.0
+nemo-toolkit[asr]>=1.0.0
+chatterbox-tts>=0.1.0
+accelerate>=0.20.0
+scipy>=1.10.0
+numpy>=1.24.0
+modal>=0.65.0
+pydub>=0.25.0
+lameenc>=1.2.0
