@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech-to-Speech Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2rem;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        
+        .card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .card h2 {
+            font-size: 1rem;
+            color: #888;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .model-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+        }
+        
+        .model-select {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .model-select label {
+            font-size: 0.85rem;
+            color: #aaa;
+        }
+        
+        select {
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+        
+        select:focus {
+            outline: none;
+            border-color: #4facfe;
+        }
+        
+        .upload-area {
+            border: 2px dashed rgba(255,255,255,0.2);
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .upload-area:hover {
+            border-color: #4facfe;
+            background: rgba(79,172,254,0.1);
+        }
+        
+        .upload-area.dragover {
+            border-color: #4facfe;
+            background: rgba(79,172,254,0.2);
+        }
+        
+        .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 10px;
+        }
+        
+        #fileInput {
+            display: none;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(79,172,254,0.4);
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .results {
+            display: none;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .result-item {
+            margin-bottom: 15px;
+        }
+        
+        .result-item label {
+            display: block;
+            font-size: 0.85rem;
+            color: #4facfe;
+            margin-bottom: 5px;
+        }
+        
+        .result-item p {
+            background: rgba(0,0,0,0.3);
+            padding: 12px;
+            border-radius: 8px;
+            line-height: 1.6;
+        }
+        
+        .timing {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .timing-item {
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .timing-item .value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #4facfe;
+        }
+        
+        .timing-item .label {
+            font-size: 0.75rem;
+            color: #888;
+            margin-top: 5px;
+        }
+        
+        audio {
+            width: 100%;
+            margin-top: 10px;
+        }
+        
+        .status {
+            text-align: center;
+            padding: 20px;
+            color: #888;
+        }
+        
+        .status.processing {
+            color: #4facfe;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: #4facfe;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .current-config {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .config-badge {
+            background: rgba(79,172,254,0.2);
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            color: #4facfe;
+        }
+        
+        .error {
+            background: rgba(255,100,100,0.2);
+            border: 1px solid rgba(255,100,100,0.3);
+            padding: 15px;
+            border-radius: 8px;
+            color: #ff6b6b;
+        }
+
+        @media (max-width: 600px) {
+            .model-grid, .timing {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Speech-to-Speech</h1>
+        <p class="subtitle">Upload audio, get AI response</p>
+        
+        <!-- Current Config Display -->
+        <div class="card">
+            <h2>📊 Current Models (Deployed)</h2>
+            <div class="current-config" id="currentConfig">
+                <span class="config-badge">Loading...</span>
+            </div>
+        </div>
+        
+        <!-- Upload -->
+        <div class="card">
+            <h2>🎤 Upload Audio</h2>
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon">📁</div>
+                <p>Drop audio file here or click to upload</p>
+                <p style="color: #666; font-size: 0.85rem; margin-top: 10px;">Supports WAV, MP3, M4A</p>
+            </div>
+            <input type="file" id="fileInput" accept="audio/*">
+            <p id="fileName" style="margin-top: 10px; color: #4facfe;"></p>
+        </div>
+        
+        <!-- Process Button -->
+        <button class="btn" id="processBtn" disabled>Process Audio</button>
+        
+        <!-- Status -->
+        <div class="status" id="status"></div>
+        
+        <!-- Results -->
+        <div class="card results" id="results">
+            <h2>📈 Results</h2>
+            
+            <div class="timing">
+                <div class="timing-item">
+                    <div class="value" id="totalTime">-</div>
+                    <div class="label">Total Time</div>
+                </div>
+                <div class="timing-item">
+                    <div class="value" id="asrTime">-</div>
+                    <div class="label">ASR</div>
+                </div>
+                <div class="timing-item">
+                    <div class="value" id="llmTime">-</div>
+                    <div class="label">LLM</div>
+                </div>
+                <div class="timing-item">
+                    <div class="value" id="ttsTime">-</div>
+                    <div class="label">TTS</div>
+                </div>
+            </div>
+            
+            <div class="result-item">
+                <label>🎤 Transcription</label>
+                <p id="transcription">-</p>
+            </div>
+            
+            <div class="result-item">
+                <label>🤖 AI Response</label>
+                <p id="response">-</p>
+            </div>
+            
+            <div class="result-item">
+                <label>🔊 Audio Response</label>
+                <audio id="audioPlayer" controls></audio>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Config - Update this with your Modal endpoint
+        const API_URL = 'https://kyeremehs--speech-modular-process.modal.run';
+        
+        let selectedFile = null;
+        
+        // Elements
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileName = document.getElementById('fileName');
+        const processBtn = document.getElementById('processBtn');
+        const status = document.getElementById('status');
+        const results = document.getElementById('results');
+        const currentConfig = document.getElementById('currentConfig');
+        
+        // Upload handling
+        uploadArea.addEventListener('click', () => fileInput.click());
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                handleFile(e.target.files[0]);
+            }
+        });
+        
+        function handleFile(file) {
+            selectedFile = file;
+            fileName.textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+            processBtn.disabled = false;
+        }
+        
+        // Process audio
+        processBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+            
+            processBtn.disabled = true;
+            status.innerHTML = '<span class="spinner"></span> Processing audio...';
+            status.className = 'status processing';
+            results.classList.remove('show');
+            
+            try {
+                // Read file as base64
+                const base64Audio = await fileToBase64(selectedFile);
+                
+                const startTime = Date.now();
+                
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        audio_base64: base64Audio
+                    })
+                });
+                
+                const clientTime = (Date.now() - startTime) / 1000;
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                }
+                
+                const data = await response.json();
+                
+                // Update current config
+                if (data.models) {
+                    currentConfig.innerHTML = `
+                        <span class="config-badge">ASR: ${data.models.asr}</span>
+                        <span class="config-badge">LLM: ${data.models.llm}</span>
+                        <span class="config-badge">TTS: ${data.models.tts}</span>
+                    `;
+                }
+                
+                // Update results
+                document.getElementById('totalTime').textContent = `${clientTime.toFixed(2)}s`;
+                document.getElementById('asrTime').textContent = `${data.asr_time.toFixed(2)}s`;
+                document.getElementById('llmTime').textContent = `${data.llm_time.toFixed(2)}s`;
+                document.getElementById('ttsTime').textContent = `${data.tts_time.toFixed(2)}s`;
+                document.getElementById('transcription').textContent = data.transcription;
+                document.getElementById('response').textContent = data.response;
+                
+                // Play audio
+                const audioBlob = base64ToBlob(data.audio_base64, 'audio/wav');
+                const audioUrl = URL.createObjectURL(audioBlob);
+                document.getElementById('audioPlayer').src = audioUrl;
+                
+                status.textContent = '✅ Complete!';
+                status.className = 'status';
+                results.classList.add('show');
+                
+            } catch (error) {
+                status.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+                status.className = 'status';
+            }
+            
+            processBtn.disabled = false;
+        });
+        
+        // Helpers
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+        
+        function base64ToBlob(base64, type) {
+            const bytes = atob(base64);
+            const buffer = new ArrayBuffer(bytes.length);
+            const view = new Uint8Array(buffer);
+            for (let i = 0; i < bytes.length; i++) {
+                view[i] = bytes.charCodeAt(i);
+            }
+            return new Blob([buffer], { type });
+        }
+        
+        // Initial config check
+        async function checkConfig() {
+            try {
+                // Quick ping to get models
+                currentConfig.innerHTML = '<span class="config-badge">Checking...</span>';
+            } catch (e) {
+                currentConfig.innerHTML = '<span class="config-badge">Not connected</span>';
+            }
+        }
+        
+        checkConfig();
+    </script>
+</body>
+</html>

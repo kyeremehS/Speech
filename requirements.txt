@@ -9,3 +9,5 @@ numpy>=1.24.0
 modal>=0.65.0
 pydub>=0.25.0
 lameenc>=1.2.0
+faster-whisper>=1.0.0
+parler-tts>=0.2.0

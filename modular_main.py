@@ -217,6 +217,49 @@ class WhisperASR(ASRModel):
     def model_name(self) -> str:
         return "Whisper Large-v3"
 
+
+@register_model("asr", "faster-whisper")
+class FasterWhisperASR(ASRModel):
+    """Faster-Whisper distil-large-v3 - Optimized CTranslate2 ASR"""
+    
+    def load(self):
+        from faster_whisper import WhisperModel
+        print("🎤 Loading Faster-Whisper distil-large-v3...")
+        self.model = WhisperModel(
+            "distil-large-v3",
+            device="cuda",
+            compute_type="float16"
+        )
+    
+    def transcribe(self, audio_bytes: bytes) -> Tuple[str, float]:
+        import tempfile
+        import os
+        import time
+        
+        t0 = time.time()
+        
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(audio_bytes)
+            temp_path = f.name
+        
+        try:
+            segments, info = self.model.transcribe(
+                temp_path,
+                beam_size=5,
+                language="en",
+                vad_filter=True
+            )
+            text = " ".join([segment.text for segment in segments])
+        finally:
+            os.unlink(temp_path)
+        
+        return text.strip(), time.time() - t0
+    
+    @property
+    def model_name(self) -> str:
+        return "Faster-Whisper distil-large-v3"
+
+
 # LLM IMPLEMENTATIONS
 @register_model("llm", "phi3")
 class Phi3LLM(LLMModel):
@@ -381,6 +424,134 @@ class GPT4oMiniLLM(LLMModel):
         return "GPT-4o Mini"
 
 
+@register_model("llm", "llama31-groq")
+class Llama31GroqLLM(LLMModel):
+    """Meta Llama-3.1-8B-Instruct via Groq API - Ultra-fast inference"""
+    
+    def load(self):
+        import os
+        print("🤖 Initializing Groq API (Llama-3.1-8B-Instruct)...")
+        # Check multiple possible key names
+        api_key = (
+            os.environ.get("GROQ_API_KEY") or 
+            os.environ.get("GROQ_KEY") or
+            os.environ.get("groq_api_key") or
+            os.environ.get("api_keys") or 
+            os.environ.get("groq-secret")
+        )
+        if not api_key:
+            # List available env vars for debugging
+            groq_vars = [k for k in os.environ.keys() if 'groq' in k.lower()]
+            raise ValueError(f"GROQ_API_KEY not found. Available groq-related vars: {groq_vars}. "
+                           "Run: modal secret create groq-secret GROQ_API_KEY=your_key")
+        
+        from groq import Groq
+        self.client = Groq(api_key=api_key)
+        print("✅ Groq API ready (Llama-3.1-8B-Instruct)")
+
+    def generate(self, user_input: str, system_prompt: Optional[str] = None) -> Tuple[str, float]:
+        import time
+        t0 = time.time()
+        
+        if not user_input.strip():
+            return "I didn't catch that.", 0.0
+        
+        system = system_prompt or "You are a helpful voice assistant. Keep responses concise and natural for speech."
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                max_tokens=150,
+                temperature=0.7,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_input}
+                ]
+            )
+            text = response.choices[0].message.content
+            if len(text) > 300:
+                text = text[:300].rsplit(' ', 1)[0] + '...'
+        except Exception as e:
+            print(f"❌ Groq API error: {e}")
+            text = "I'm having trouble connecting. Please try again."
+        
+        return text.strip(), time.time() - t0
+    
+    @property
+    def model_name(self) -> str:
+        return "Llama-3.1-8B-Instruct (Groq)"
+
+
+@register_model("llm", "qwen3")
+class Qwen3LLM(LLMModel):
+    """Qwen3-1.7B - Fast and efficient small LLM"""
+    
+    def load(self):
+        import torch
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        
+        print("🤖 Loading Qwen3-1.7B...")
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "Qwen/Qwen3-1.7B-Instruct",
+            trust_remote_code=True
+        )
+        self.model = AutoModelForCausalLM.from_pretrained(
+            "Qwen/Qwen3-1.7B-Instruct",
+            torch_dtype=torch.float16,
+            device_map="cuda",
+            trust_remote_code=True,
+        )
+        self.model.eval()
+        print("✅ Qwen3-1.7B loaded")
+    
+    def generate(self, user_input: str, system_prompt: Optional[str] = None) -> Tuple[str, float]:
+        import torch
+        import time
+        
+        t0 = time.time()
+        
+        if not user_input.strip():
+            return "I didn't catch that.", 0.0
+        
+        system = system_prompt or "You are a helpful voice assistant. Keep responses concise and natural for speech."
+        
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_input}
+        ]
+        
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False  # Disable thinking mode for faster responses
+        )
+        
+        inputs = self.tokenizer(text, return_tensors="pt").to("cuda")
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=150,
+                temperature=0.7,
+                top_p=0.9,
+                do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+        
+        response = self.tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+        
+        # Truncate for voice output
+        if len(response) > 300:
+            response = response[:300].rsplit(' ', 1)[0] + '...'
+        
+        return response.strip(), time.time() - t0
+    
+    @property
+    def model_name(self) -> str:
+        return "Qwen3-1.7B"
+
+
 # TTS IMPLEMENTATIONS
 @register_model("tts", "chatterbox")
 class ChatterboxTTS(TTSModel):
@@ -422,13 +593,259 @@ class ChatterboxTTS(TTSModel):
     def model_name(self) -> str:
         return "ChatterboxTTS Turbo"
 
+
+@register_model("tts", "parler")
+class ParlerTTS(TTSModel):
+    """Parler-TTS Mini v1 - Expressive text-to-speech with voice descriptions"""
+    
+    def load(self):
+        import torch
+        from parler_tts import ParlerTTSForConditionalGeneration
+        from transformers import AutoTokenizer
+        
+        print("🔊 Loading Parler-TTS Mini v1...")
+        self.model = ParlerTTSForConditionalGeneration.from_pretrained(
+            "parler-tts/parler-tts-mini-v1"
+        ).to("cuda")
+        self.tokenizer = AutoTokenizer.from_pretrained("parler-tts/parler-tts-mini-v1")
+        
+        # Default voice description - natural conversational voice
+        self.voice_description = (
+            "A female speaker delivers her words in a clear, friendly manner "
+            "with a moderate pace. The recording quality is excellent with minimal background noise."
+        )
+    
+    def synthesize(self, text: str, voice_description: str = None) -> Tuple[bytes, float, float]:
+        import io
+        import time
+        import numpy as np
+        from scipy.io import wavfile
+        import torch
+        
+        t0 = time.time()
+        
+        text = text[:300]  # Safety limit
+        description = voice_description or self.voice_description
+        
+        # Tokenize inputs
+        input_ids = self.tokenizer(description, return_tensors="pt").input_ids.to("cuda")
+        prompt_input_ids = self.tokenizer(text, return_tensors="pt").input_ids.to("cuda")
+        
+        # Generate audio
+        with torch.no_grad():
+            generation = self.model.generate(
+                input_ids=input_ids,
+                prompt_input_ids=prompt_input_ids
+            )
+        
+        audio_np = generation.cpu().numpy().squeeze()
+        sample_rate = self.model.config.sampling_rate  # 44100 Hz for Parler
+        
+        # Convert to int16 for WAV
+        if audio_np.dtype in [np.float32, np.float64]:
+            max_val = np.abs(audio_np).max()
+            if max_val > 1.0:
+                audio_np = audio_np / max_val
+            audio_np = (audio_np * 32767).astype(np.int16)
+        
+        buffer = io.BytesIO()
+        wavfile.write(buffer, sample_rate, audio_np)
+        
+        audio_duration = len(audio_np) / sample_rate
+        
+        return buffer.getvalue(), audio_duration, time.time() - t0
+    
+    @property
+    def model_name(self) -> str:
+        return "Parler-TTS Mini v1"
+
+
+@register_model("tts", "vibevoice")
+class VibeVoiceTTS(TTSModel):
+    """Microsoft VibeVoice-Realtime-0.5B - Ultra-low latency real-time TTS (~300ms first speech)"""
+    
+    def load(self):
+        import torch
+        import copy
+        from vibevoice.modular.modeling_vibevoice_streaming_inference import VibeVoiceStreamingForConditionalGenerationInference
+        from vibevoice.processor.vibevoice_streaming_processor import VibeVoiceStreamingProcessor
+        from huggingface_hub import hf_hub_download
+        
+        print("🔊 Loading VibeVoice-Realtime-0.5B...")
+        
+        model_path = "microsoft/VibeVoice-Realtime-0.5B"
+        
+        # Load processor
+        self.processor = VibeVoiceStreamingProcessor.from_pretrained(model_path)
+        
+        # Load model with SDPA attention (PyTorch native, no flash-attn needed)
+        self.model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda",
+            attn_implementation="sdpa",  # SDPA is built into PyTorch, no extra deps
+        )
+        self.model.eval()
+        self.model.set_ddpm_inference_steps(num_steps=5)  # Fast inference
+        
+        # Load voice preset (Carter - natural male voice)
+        # Available English voices: en-Carter_man, en-Frank_man, en-Davis_man, en-Mike_man, en-Emma_woman, en-Grace_woman
+        voice_paths = [
+            "/root/vibevoice_voices/streaming_model/en-Carter_man.pt",
+            "/root/vibevoice_voices/streaming_model/en-Davis_man.pt",
+            "/root/vibevoice_voices/streaming_model/en-Mike_man.pt",
+            "/root/vibevoice_voices/streaming_model/en-Emma_woman.pt",
+        ]
+        voice_file = None
+        for path in voice_paths:
+            if os.path.exists(path):
+                voice_file = path
+                break
+        
+        if voice_file is None:
+            # List what's available for debugging
+            import glob
+            available = glob.glob("/root/vibevoice_voices/**/*.pt", recursive=True)
+            raise FileNotFoundError(f"Voice preset not found. Checked: {voice_paths}. Available: {available}")
+        
+        print(f"   Using voice: {voice_file}")
+        self.voice_preset = torch.load(voice_file, map_location="cuda", weights_only=False)
+        self.copy = copy  # Store for deep copy in generate
+        
+        print("✅ VibeVoice-Realtime-0.5B loaded")
+    
+    def synthesize(self, text: str) -> Tuple[bytes, float, float]:
+        import io
+        import time
+        import numpy as np
+        from scipy.io import wavfile
+        import torch
+        
+        t0 = time.time()
+        
+        # Clean and limit text
+        text = text[:500].replace("'", "'").replace('"', '"').replace('"', '"')
+        
+        # Prepare inputs with cached voice prompt
+        inputs = self.processor.process_input_with_cached_prompt(
+            text=text,
+            cached_prompt=self.voice_preset,
+            padding=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        
+        # Move to GPU
+        for k, v in inputs.items():
+            if torch.is_tensor(v):
+                inputs[k] = v.to("cuda")
+        
+        # Generate audio
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=None,
+                cfg_scale=1.5,
+                tokenizer=self.processor.tokenizer,
+                generation_config={'do_sample': False},
+                verbose=False,
+                all_prefilled_outputs=self.copy.deepcopy(self.voice_preset),
+            )
+        
+        # Extract audio
+        audio_tensor = outputs.speech_outputs[0]
+        # Convert bfloat16 to float32 (NumPy doesn't support bfloat16)
+        audio_np = audio_tensor.float().cpu().numpy().squeeze()
+        sample_rate = 24000  # VibeVoice outputs at 24kHz
+        
+        # Convert to int16 for WAV
+        if audio_np.dtype in [np.float32, np.float64]:
+            max_val = np.abs(audio_np).max()
+            if max_val > 1.0:
+                audio_np = audio_np / max_val
+            audio_np = (audio_np * 32767).astype(np.int16)
+        
+        buffer = io.BytesIO()
+        wavfile.write(buffer, sample_rate, audio_np)
+        
+        audio_duration = len(audio_np) / sample_rate
+        
+        return buffer.getvalue(), audio_duration, time.time() - t0
+    
+    @property
+    def model_name(self) -> str:
+        return "VibeVoice-Realtime-0.5B"
+
+
+@register_model("tts", "orpheus")
+class OrpheusTTS(TTSModel):
+    """Canopy Labs Orpheus-3B - Human-like expressive TTS with emotion tags (~200ms streaming latency)"""
+    
+    def load(self):
+        print("🔊 Loading Orpheus TTS 3B...")
+        from orpheus_tts import OrpheusModel
+        
+        # Load Orpheus model - uses vLLM under the hood
+        self.model = OrpheusModel(
+            model_name="canopylabs/orpheus-tts-0.1-finetune-prod",
+            max_model_len=2048
+        )
+        
+        # Available voices: tara, leah, jess, leo, dan, mia, zac, zoe
+        self.default_voice = "tara"  # Natural female voice
+        
+        print("✅ Orpheus TTS 3B loaded")
+    
+    def synthesize(self, text: str, voice: str = None) -> Tuple[bytes, float, float]:
+        import io
+        import time
+        import wave
+        
+        t0 = time.time()
+        
+        # Clean and limit text
+        text = text[:500].replace("'", "'").replace('"', '"').replace('"', '"')
+        voice = voice or self.default_voice
+        
+        # Generate audio using Orpheus streaming API
+        audio_chunks = []
+        syn_tokens = self.model.generate_speech(
+            prompt=text,
+            voice=voice,
+        )
+        
+        # Collect all chunks
+        for audio_chunk in syn_tokens:
+            audio_chunks.append(audio_chunk)
+        
+        # Combine audio data
+        audio_data = b''.join(audio_chunks)
+        
+        # Create WAV file
+        buffer = io.BytesIO()
+        sample_rate = 24000
+        with wave.open(buffer, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_data)
+        
+        audio_duration = len(audio_data) / (sample_rate * 2)  # 2 bytes per sample
+        
+        return buffer.getvalue(), audio_duration, time.time() - t0
+    
+    @property
+    def model_name(self) -> str:
+        return "Orpheus TTS 3B"
+
+
 # Modal App Setup
 app = modal.App("speech-to-speech")
 
 # Build image with all dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("ffmpeg", "libsndfile1", "git", "build-essential")
+    .apt_install("ffmpeg", "libsndfile1", "git", "build-essential", "wget")
     .pip_install(
         "torch>=2.0.0",
         "torchaudio>=2.0.0",
@@ -437,11 +854,29 @@ image = (
         "pydub>=0.25.0",
     )
     .pip_install("nemo-toolkit[asr]>=1.0.0")
-    .pip_install("transformers>=4.36.0", "accelerate>=0.20.0")
+    # Upgrade transformers for Qwen3 support (requires >=4.51.0) - force rebuild v2
+    .pip_install("transformers>=4.51.0", "accelerate>=0.26.0")
     .pip_install("chatterbox-tts>=0.1.0")
-    # Add more model dependencies as needed
-    # .pip_install("openai-whisper")  # Uncomment for Whisper
-    .pip_install("openai")  # Uncomment for OpenAI GPT models
+    # Faster-Whisper for optimized ASR
+    .pip_install("faster-whisper>=1.0.0")
+    # Parler-TTS for expressive speech synthesis
+    .pip_install("parler-tts>=0.2.0")
+    # VibeVoice for ultra-low latency TTS (~300ms first speech)
+    # Using SDPA attention (built into PyTorch) instead of flash-attn to avoid CUDA compilation
+    .pip_install("diffusers>=0.25.0", "soundfile")
+    .run_commands(
+        # Clone VibeVoice repo and install
+        "git clone --depth 1 https://github.com/microsoft/VibeVoice.git /tmp/vibevoice && "
+        "cd /tmp/vibevoice && pip install -e . && "
+        # Download experimental voices using their script
+        "cd /tmp/vibevoice/demo && bash download_experimental_voices.sh && "
+        # Copy voices to persistent location
+        "mkdir -p /root/vibevoice_voices && "
+        "cp -r /tmp/vibevoice/demo/voices/* /root/vibevoice_voices/"
+    )
+    # Orpheus TTS for human-like expressive speech with emotion tags
+    .pip_install("orpheus-speech", "vllm==0.7.3")
+    .pip_install("openai", "groq")  # For OpenAI and Groq API models
 )
 
 
@@ -456,12 +891,18 @@ _TTS_MODEL = os.getenv("TTS_MODEL", "chatterbox")
     image=image,
     gpu="A10G",
     timeout=600,
-    container_idle_timeout=300,
-    secrets=[modal.Secret.from_dict({
-        "ASR_MODEL": _ASR_MODEL,
-        "LLM_MODEL": _LLM_MODEL,
-        "TTS_MODEL": _TTS_MODEL,
-    }), modal.Secret.from_name("api-keys"), modal.Secret.from_name("hf-secret")],
+    scaledown_window=300,
+    secrets=[
+        modal.Secret.from_dict({
+            "ASR_MODEL": _ASR_MODEL,
+            "LLM_MODEL": _LLM_MODEL,
+            "TTS_MODEL": _TTS_MODEL,
+        }),
+        modal.Secret.from_name("hf-secret"),
+    ] + (
+        # Include api-keys for both GPT-4o Mini and Groq (Groq key is also stored there)
+        [modal.Secret.from_name("api-keys")] if _LLM_MODEL in ["gpt4omini", "llama31-groq"] else []
+    ),
 )
 class SpeechToSpeechService:
     """
