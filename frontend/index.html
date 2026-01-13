@@ -490,7 +490,18 @@
                     }
 
                     const data = await response.json();
-                    const metrics = data.metrics || {};
+                    console.log('Response data:', data); // Debug logging
+                    
+                    // Handle both nested metrics and flat structure
+                    const metrics = data.metrics || {
+                        asr_time: data.asr_time,
+                        llm_time: data.llm_time,
+                        tts_time: data.tts_time,
+                        total_time: data.total_time,
+                        total_pipeline: data.total_pipeline || data.total_time,
+                        input_duration: data.input_duration,
+                        output_duration: data.output_duration,
+                    };
 
                     // Update UI safely
                     document.getElementById('totalTime').textContent = formatMetric(clientTime);
@@ -540,9 +551,14 @@
                     document.getElementById('rtfThroughput').innerHTML =
                         `Real-Time Factor: <b>${rtf}x</b> &nbsp;|&nbsp; Throughput: <b>${throughput}x</b> realtime`;
 
-                    // Audio Handling
-                    if (data.audio) {
-                        const audioBlob = base64ToBlob(data.audio, 'audio/mp3');
+                    // Audio Handling - backend returns audio_base64 as WAV
+                    const audioData = data.audio_base64 || data.audio;
+                    console.log('Audio data received:', audioData ? `${audioData.length} chars` : 'NONE');
+                    
+                    if (audioData) {
+                        console.log('Creating audio blob...');
+                        const audioBlob = base64ToBlob(audioData, 'audio/wav');
+                        console.log('Audio blob size:', audioBlob.size);
                         const audioUrl = URL.createObjectURL(audioBlob);
                         const audioPlayer = document.getElementById('audioPlayer');
                         audioPlayer.src = audioUrl;
@@ -551,6 +567,7 @@
                         const playAudio = async () => {
                             try {
                                 await audioPlayer.play();
+                                console.log('Audio playing');
                             } catch (e) {
                                 console.warn("Auto-play blocked:", e);
                                 status.innerHTML = '✅ Complete! <small>(Tap play to listen)</small>';

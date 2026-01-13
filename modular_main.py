@@ -47,12 +47,39 @@ def compress_wav_to_mp3(wav_bytes: bytes, bitrate: int = 64) -> bytes:
     audio.export(buffer, format="mp3", bitrate=f"{bitrate}k")
     return buffer.getvalue()
 
-def decompress_mp3_to_wav(mp3_bytes: bytes) -> bytes:
-    """Decompress MP3 bytes back to WAV for processing."""
+def decompress_mp3_to_wav(audio_bytes: bytes) -> bytes:
+    """Convert any audio format (MP3, M4A, WebM, OGG, etc.) to WAV for processing."""
     import io
     from pydub import AudioSegment
-
-    audio = AudioSegment.from_mp3(io.BytesIO(mp3_bytes))
+    
+    # Try to detect format from magic bytes
+    header = audio_bytes[:12]
+    
+    try:
+        if header[:3] == b'ID3' or header[:2] in (b'\xff\xfb', b'\xff\xfa', b'\xff\xf3'):
+            # MP3
+            audio = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
+        elif header[:4] == b'OggS':
+            # OGG/WebM
+            audio = AudioSegment.from_ogg(io.BytesIO(audio_bytes))
+        elif header[:4] == b'fLaC':
+            # FLAC
+            audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="flac")
+        elif b'ftyp' in header[:12]:
+            # M4A/MP4
+            audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="m4a")
+        elif header[:4] == b'RIFF':
+            # Already WAV
+            return audio_bytes
+        else:
+            # Try auto-detect
+            audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
+    except Exception as e:
+        # Last resort: try raw format detection
+        audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
+    
+    # Convert to WAV (16-bit PCM, mono, 16kHz for ASR)
+    audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
     buffer = io.BytesIO()
     audio.export(buffer, format="wav")
     return buffer.getvalue()
@@ -971,6 +998,11 @@ class SpeechToSpeechService:
     Change models via environment variables:
         ASR_MODEL=whisper LLM_MODEL=llama TTS_MODEL=chatterbox
     """
+    
+    # Class-level caches for loaded models
+    loaded_asr: dict = {}
+    loaded_llm: dict = {}
+    loaded_tts: dict = {}
 
     @modal.enter()
     def load_models(self):
@@ -1140,6 +1172,36 @@ class SpeechToSpeechService:
         import io
 
         t_start = time.time()
+        
+        # Use specified models or defaults
+        asr = self.asr
+        llm = self.llm
+        tts = self.tts
+        
+        # Load different model if requested
+        if asr_model and asr_model != self.config.asr:
+            if asr_model in self.loaded_asr:
+                asr = self.loaded_asr[asr_model]
+            elif asr_model in MODEL_REGISTRY["asr"]:
+                asr = MODEL_REGISTRY["asr"][asr_model]()
+                asr.load()
+                self.loaded_asr[asr_model] = asr
+        
+        if llm_model and llm_model != self.config.llm:
+            if llm_model in self.loaded_llm:
+                llm = self.loaded_llm[llm_model]
+            elif llm_model in MODEL_REGISTRY["llm"]:
+                llm = MODEL_REGISTRY["llm"][llm_model]()
+                llm.load()
+                self.loaded_llm[llm_model] = llm
+        
+        if tts_model and tts_model != self.config.tts:
+            if tts_model in self.loaded_tts:
+                tts = self.loaded_tts[tts_model]
+            elif tts_model in MODEL_REGISTRY["tts"]:
+                tts = MODEL_REGISTRY["tts"][tts_model]()
+                tts.load()
+                self.loaded_tts[tts_model] = tts
 
         # Handle compressed input
         input_compressed = False
@@ -1225,79 +1287,7 @@ def process_speech(audio_bytes: bytes) -> dict:
     service = SpeechToSpeechService()
     return service.process.remote(audio_bytes)
 
-# FastAPI App for Web Endpoint with CORS
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-import base64
-
-web_app = FastAPI()
-
-web_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@web_app.post("/")
-async def process_web_route(data: dict):
-    """Web endpoint for the frontend"""
-    # Decode input
-    audio_b64 = data.get("audio") or data.get("audio_base64")
-    if not audio_b64:
-        print("❌ No audio data found in request")
-        return {"error": "No audio provided"}
-
-    # Handle data URI scheme if present
-    if "base64," in audio_b64:
-        audio_b64 = audio_b64.split("base64,")[1]
-
-    try:
-        audio_bytes = base64.b64decode(audio_b64)
-    except Exception as e:
-        return {"error": f"Invalid base64: {str(e)}"}
-
-    print(f"📦 Received {len(audio_bytes)} bytes audio")
-
-    # Validate audio size
-    if len(audio_bytes) == 0:
-        print("❌ Received 0 bytes audio")
-        return {"error": "Received empty audio file"}
-
-    # Process
-    service = SpeechToSpeechService()
-    try:
-        # Call the Modal service
-        result = await service.process.remote.aio(audio_bytes)
-    except Exception as e:
-        print(f"❌ Processing failed: {e}")
-        return {"error": str(e)}
-
-    # Encode output audio to base64
-    if result.get("audio"):
-        result["audio"] = base64.b64encode(result["audio"]).decode("utf-8")
-        print(f"✅ Returning audio ({len(result['audio'])} chars)")
-    else:
-        print("⚠️ No audio in result")
-
-    return result
-
-@app.function(image=image, timeout=600)
-@modal.asgi_app()
-def process_web():
-    return web_app
-
-@app.function(image=image)
-@modal.web_endpoint()
-def get_models():
-    """Return current model configuration for frontend"""
-    config = ModelConfig()
-    return {
-        "asr": config.asr,
-        "llm": config.llm,
-        "tts": config.tts
-    }
+ 
 
 @app.function(image=image, timeout=600)
 def process_speech_streaming(audio_bytes: bytes):
