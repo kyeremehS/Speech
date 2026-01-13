@@ -11,4 +11,3 @@ pydub>=0.25.0
 lameenc>=1.2.0
 faster-whisper>=1.0.0
 parler-tts>=0.2.0
-Flask
