@@ -1197,18 +1197,29 @@ class SpeechToSpeechService:
         llm = self._get_or_load_model("llm", llm_model) if llm_model else self.llm
         tts = self._get_or_load_model("tts", tts_model) if tts_model else self.tts
         
-        # Handle compressed input
-        input_compressed = False
+        # Validate input
         original_size = len(audio_bytes)
+        if original_size < 100:
+            raise ValueError(f"Audio data too small: {original_size} bytes. Expected valid audio file.")
         
-        if not audio_bytes.startswith(b'RIFF'):
+        # Detect file type from magic bytes
+        header = audio_bytes[:12]
+        is_wav = header[:4] == b'RIFF'
+        is_mp3 = header[:3] == b'ID3' or header[:2] in (b'\xff\xfb', b'\xff\xfa', b'\xff\xf3')
+        is_m4a = b'ftyp' in header[:12]
+        print(f"📥 Input: {original_size} bytes, WAV={is_wav}, MP3={is_mp3}, M4A={is_m4a}")
+        
+        # Handle compressed/non-WAV input
+        input_compressed = False
+        if not is_wav:
             try:
-                print(f"📦 Decompressing input: {original_size} bytes")
+                print(f"📦 Converting to WAV: {original_size} bytes")
                 audio_bytes = decompress_mp3_to_wav(audio_bytes)
-                print(f"📦 Decompressed: {len(audio_bytes)} bytes")
+                print(f"📦 Converted: {len(audio_bytes)} bytes")
                 input_compressed = True
             except Exception as e:
-                print(f"⚠️  Decompression failed, assuming WAV: {e}")
+                print(f"⚠️  Conversion failed: {e}")
+                raise ValueError(f"Failed to decode audio: {e}")
         
         # Get input duration
         try:
@@ -1287,7 +1298,7 @@ def process_speech_streaming(audio_bytes: bytes):
 
 # Web API endpoint to list available models (lightweight - no GPU needed)
 @app.function(image=image, timeout=60, gpu=None)
-@modal.web_endpoint(method="GET")
+@modal.fastapi_endpoint(method="GET")
 def get_models() -> dict:
     """
     Get list of available models for frontend dropdowns.
@@ -1308,7 +1319,7 @@ def get_models() -> dict:
 
 # Web API endpoint for frontend
 @app.function(image=image, timeout=600)
-@modal.web_endpoint(method="POST")
+@modal.fastapi_endpoint(method="POST")
 def process_web(data: dict) -> dict:
     """
     Web endpoint for frontend - accepts JSON with base64 audio.
@@ -1323,10 +1334,31 @@ def process_web(data: dict) -> dict:
     """
     import base64
     
-    # Decode input
-    audio_base64 = data.get("audio_base64", "")
-    audio_bytes = base64.b64decode(audio_base64)
+    # Debug: log what we received
+    print(f"📥 Received request data keys: {list(data.keys()) if data else 'None'}")
+    print(f"📥 Data type: {type(data)}")
+    
+    # Decode input with validation
+    audio_base64 = data.get("audio_base64", "") if data else ""
+    
+    if not audio_base64:
+        print(f"❌ audio_base64 is empty. Full data: {str(data)[:500]}")
+        raise ValueError(f"No audio data received. 'audio_base64' is empty or missing. Received keys: {list(data.keys()) if data else 'None'}")
+    
+    print(f"📥 Received audio_base64: {len(audio_base64)} chars")
+    
+    try:
+        audio_bytes = base64.b64decode(audio_base64)
+    except Exception as e:
+        raise ValueError(f"Failed to decode base64 audio: {e}")
+    
+    if len(audio_bytes) < 100:
+        raise ValueError(f"Audio data too small: {len(audio_bytes)} bytes. Expected valid audio file.")
+    
+    print(f"📥 Decoded audio: {len(audio_bytes)} bytes")
+    
     system_prompt = data.get("system_prompt")
+
     
     asr_model = data.get("asr_model")
     tts_model = data.get("tts_model")

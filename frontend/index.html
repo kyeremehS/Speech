@@ -484,6 +484,22 @@
                 // Read file as base64
                 const base64Audio = await fileToBase64(selectedFile);
                 
+                // Debug: check base64 length
+                console.log('Base64 audio length:', base64Audio ? base64Audio.length : 0);
+                if (!base64Audio || base64Audio.length < 100) {
+                    throw new Error('Failed to read audio file - base64 is empty');
+                }
+                
+                const requestBody = {
+                    audio_base64: base64Audio,
+                    asr_model: selectedAsr,
+                    llm_model: selectedLlm,
+                    tts_model: selectedTts,
+                };
+                
+                console.log('Sending request with keys:', Object.keys(requestBody));
+                console.log('audio_base64 length in body:', requestBody.audio_base64.length);
+                
                 const startTime = Date.now();
                 
                 const response = await fetch(PROCESS_URL, {
@@ -491,12 +507,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        audio_base64: base64Audio,
-                        asr_model: selectedAsr,
-                        llm_model: selectedLlm,
-                        tts_model: selectedTts,
-                    })
+                    body: JSON.stringify(requestBody)
                 });
                 
                 const clientTime = (Date.now() - startTime) / 1000;
