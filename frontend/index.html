@@ -67,6 +67,13 @@
         .model-select label {
             font-size: 0.85rem;
             color: #aaa;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .model-select label .icon {
+            font-size: 1rem;
         }
         
         select {
@@ -82,6 +89,11 @@
         select:focus {
             outline: none;
             border-color: #4facfe;
+        }
+        
+        select option {
+            background: #1a1a2e;
+            color: #fff;
         }
         
         .upload-area {
@@ -219,18 +231,14 @@
             to { transform: rotate(360deg); }
         }
         
-        .current-config {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        
-        .config-badge {
+        .model-badge {
+            display: inline-block;
             background: rgba(79,172,254,0.2);
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
             color: #4facfe;
+            margin-left: 5px;
         }
         
         .error {
@@ -239,6 +247,11 @@
             padding: 15px;
             border-radius: 8px;
             color: #ff6b6b;
+        }
+        
+        .loading-models {
+            color: #888;
+            font-style: italic;
         }
 
         @media (max-width: 600px) {
@@ -251,13 +264,30 @@
 <body>
     <div class="container">
         <h1>🎙️ Speech-to-Speech</h1>
-        <p class="subtitle">Upload audio, get AI response</p>
+        <p class="subtitle">Upload audio, select models, get AI response</p>
         
-        <!-- Current Config Display -->
+        <!-- Model Selection -->
         <div class="card">
-            <h2>📊 Current Models (Deployed)</h2>
-            <div class="current-config" id="currentConfig">
-                <span class="config-badge">Loading...</span>
+            <h2>🧠 Select Models</h2>
+            <div class="model-grid">
+                <div class="model-select">
+                    <label><span class="icon">🎤</span> ASR (Speech-to-Text)</label>
+                    <select id="asrSelect" disabled>
+                        <option value="">Loading...</option>
+                    </select>
+                </div>
+                <div class="model-select">
+                    <label><span class="icon">🤖</span> LLM (AI Brain)</label>
+                    <select id="llmSelect" disabled>
+                        <option value="">Loading...</option>
+                    </select>
+                </div>
+                <div class="model-select">
+                    <label><span class="icon">🔊</span> TTS (Text-to-Speech)</label>
+                    <select id="ttsSelect" disabled>
+                        <option value="">Loading...</option>
+                    </select>
+                </div>
             </div>
         </div>
         
@@ -303,27 +333,29 @@
             </div>
             
             <div class="result-item">
-                <label>🎤 Transcription</label>
+                <label>🎤 Transcription <span class="model-badge" id="usedAsr">-</span></label>
                 <p id="transcription">-</p>
             </div>
             
             <div class="result-item">
-                <label>🤖 AI Response</label>
+                <label>🤖 AI Response <span class="model-badge" id="usedLlm">-</span></label>
                 <p id="response">-</p>
             </div>
             
             <div class="result-item">
-                <label>🔊 Audio Response</label>
+                <label>🔊 Audio Response <span class="model-badge" id="usedTts">-</span></label>
                 <audio id="audioPlayer" controls></audio>
             </div>
         </div>
     </div>
 
     <script>
-        // Config - Update this with your Modal endpoint
-        const API_URL = 'https://kyeremehs--speech-modular-process.modal.run';
+        // Config - Your Modal endpoint URLs
+        const PROCESS_URL = 'https://samuelkyeremeh224--speech-to-speech-process-web.modal.run';
+        const MODELS_URL = 'https://samuelkyeremeh224--speech-to-speech-get-models.modal.run';
         
         let selectedFile = null;
+        let availableModels = null;
         
         // Elements
         const uploadArea = document.getElementById('uploadArea');
@@ -332,7 +364,76 @@
         const processBtn = document.getElementById('processBtn');
         const status = document.getElementById('status');
         const results = document.getElementById('results');
-        const currentConfig = document.getElementById('currentConfig');
+        const asrSelect = document.getElementById('asrSelect');
+        const llmSelect = document.getElementById('llmSelect');
+        const ttsSelect = document.getElementById('ttsSelect');
+        
+        // Model display names
+        const MODEL_NAMES = {
+            // ASR
+            'nemo': 'NeMo RNNT',
+            'whisper': 'Whisper Large-v3',
+            'faster-whisper': 'Faster-Whisper (distil-large-v3)',
+            // LLM
+            'phi3': 'Phi-3 Mini',
+            'llama': 'Llama 3.2 3B',
+            'gpt4omini': 'GPT-4o Mini',
+            'llama31-groq': 'Llama 3.1 8B (Groq)',
+            'qwen3': 'Qwen3 1.7B',
+            // TTS
+            'chatterbox': 'ChatterboxTTS Turbo',
+            'parler': 'Parler-TTS Mini',
+            'vibevoice': 'VibeVoice-Realtime-0.5B',
+            'orpheus': 'Orpheus TTS 3B',
+        };
+        
+        // Fallback models if API fails
+        const FALLBACK_MODELS = {
+            asr: ['nemo', 'whisper', 'faster-whisper'],
+            llm: ['phi3', 'llama', 'gpt4omini', 'llama31-groq', 'qwen3'],
+            tts: ['chatterbox', 'parler', 'vibevoice', 'orpheus'],
+            current: { asr: 'faster-whisper', llm: 'phi3', tts: 'chatterbox' }
+        };
+        
+        // Load available models on page load
+        async function loadModels() {
+            let models = FALLBACK_MODELS;
+            
+            try {
+                const response = await fetch(MODELS_URL);
+                if (response.ok) {
+                    models = await response.json();
+                }
+            } catch (error) {
+                console.warn('Using fallback models:', error);
+            }
+            
+            availableModels = models;
+            
+            // Populate ASR dropdown
+            asrSelect.innerHTML = models.asr.map(m => 
+                `<option value="${m}" ${m === models.current.asr ? 'selected' : ''}>
+                    ${MODEL_NAMES[m] || m}
+                </option>`
+            ).join('');
+            asrSelect.disabled = false;
+            
+            // Populate LLM dropdown
+            llmSelect.innerHTML = models.llm.map(m => 
+                `<option value="${m}" ${m === models.current.llm ? 'selected' : ''}>
+                    ${MODEL_NAMES[m] || m}
+                </option>`
+            ).join('');
+            llmSelect.disabled = false;
+            
+            // Populate TTS dropdown
+            ttsSelect.innerHTML = models.tts.map(m => 
+                `<option value="${m}" ${m === models.current.tts ? 'selected' : ''}>
+                    ${MODEL_NAMES[m] || m}
+                </option>`
+            ).join('');
+            ttsSelect.disabled = false;
+        }
         
         // Upload handling
         uploadArea.addEventListener('click', () => fileInput.click());
@@ -371,7 +472,11 @@
             if (!selectedFile) return;
             
             processBtn.disabled = true;
-            status.innerHTML = '<span class="spinner"></span> Processing audio...';
+            const selectedAsr = asrSelect.value;
+            const selectedLlm = llmSelect.value;
+            const selectedTts = ttsSelect.value;
+            
+            status.innerHTML = `<span class="spinner"></span> Processing with ${MODEL_NAMES[selectedAsr] || selectedAsr} → ${MODEL_NAMES[selectedLlm] || selectedLlm} → ${MODEL_NAMES[selectedTts] || selectedTts}...`;
             status.className = 'status processing';
             results.classList.remove('show');
             
@@ -381,13 +486,16 @@
                 
                 const startTime = Date.now();
                 
-                const response = await fetch(API_URL, {
+                const response = await fetch(PROCESS_URL, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        audio_base64: base64Audio
+                        audio_base64: base64Audio,
+                        asr_model: selectedAsr,
+                        llm_model: selectedLlm,
+                        tts_model: selectedTts,
                     })
                 });
                 
@@ -399,15 +507,6 @@
                 
                 const data = await response.json();
                 
-                // Update current config
-                if (data.models) {
-                    currentConfig.innerHTML = `
-                        <span class="config-badge">ASR: ${data.models.asr}</span>
-                        <span class="config-badge">LLM: ${data.models.llm}</span>
-                        <span class="config-badge">TTS: ${data.models.tts}</span>
-                    `;
-                }
-                
                 // Update results
                 document.getElementById('totalTime').textContent = `${clientTime.toFixed(2)}s`;
                 document.getElementById('asrTime').textContent = `${data.asr_time.toFixed(2)}s`;
@@ -415,6 +514,11 @@
                 document.getElementById('ttsTime').textContent = `${data.tts_time.toFixed(2)}s`;
                 document.getElementById('transcription').textContent = data.transcription;
                 document.getElementById('response').textContent = data.response;
+                
+                // Show which models were used
+                document.getElementById('usedAsr').textContent = data.models.asr;
+                document.getElementById('usedLlm').textContent = data.models.llm;
+                document.getElementById('usedTts').textContent = data.models.tts;
                 
                 // Play audio
                 const audioBlob = base64ToBlob(data.audio_base64, 'audio/wav');
@@ -456,17 +560,8 @@
             return new Blob([buffer], { type });
         }
         
-        // Initial config check
-        async function checkConfig() {
-            try {
-                // Quick ping to get models
-                currentConfig.innerHTML = '<span class="config-badge">Checking...</span>';
-            } catch (e) {
-                currentConfig.innerHTML = '<span class="config-badge">Not connected</span>';
-            }
-        }
-        
-        checkConfig();
+        // Load models on page load
+        loadModels();
     </script>
 </body>
 </html>

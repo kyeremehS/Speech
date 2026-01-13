@@ -158,7 +158,7 @@ def play_audio(audio_bytes):
     sd.play(data, samplerate)
     sd.wait()
 
-def print_metrics(metrics: dict, network_time: float, record_time: float):
+def print_metrics(metrics: dict, network_time: float, record_time: float, models: dict = None):
     """Print detailed latency breakdown."""
     asr = metrics.get("asr_time", 0)
     llm = metrics.get("llm_time", 0)
@@ -172,6 +172,11 @@ def print_metrics(metrics: dict, network_time: float, record_time: float):
     input_tokens = metrics.get("input_tokens", len(str(input_chars).split()))
     output_tokens = metrics.get("output_tokens", len(str(output_chars).split()))
     
+    # Get model names from response or use defaults
+    asr_name = models.get("asr", "ASR") if models else "ASR"
+    llm_name = models.get("llm", "LLM") if models else "LLM"
+    tts_name = models.get("tts", "TTS") if models else "TTS"
+    
     # Avoid division by zero
     pipeline = max(pipeline, 0.001)
     
@@ -182,18 +187,18 @@ def print_metrics(metrics: dict, network_time: float, record_time: float):
     print("\n" + "="*70)
     print(f"{'LATENCY BREAKDOWN':^70}")
     print("="*70)
-    print(f"{'Component':<18} | {'Time (s)':<10} | {'%':<8} | {'Details':<26}")
+    print(f"{'Component':<25} | {'Time (s)':<10} | {'%':<8} | {'Details':<20}")
     print("-"*70)
-    print(f"{'Recording':<18} | {record_time:<10.3f} | {'-':<8} | {input_dur:.1f}s audio captured")
+    print(f"{'Recording':<25} | {record_time:<10.3f} | {'-':<8} | {input_dur:.1f}s audio captured")
     print("-"*70)
-    print(f"{'ASR (NeMo RNNT)':<18} | {asr:<10.3f} | {asr/pipeline*100:>6.1f}% | {input_dur:.1f}s → {input_chars} chars")
-    print(f"{'LLM (Phi-3-Mini)':<18} | {llm:<10.3f} | {llm/pipeline*100:>6.1f}% | {input_tokens}→{output_tokens} tokens")
-    print(f"{'TTS (Chatterbox)':<18} | {tts:<10.3f} | {tts/pipeline*100:>6.1f}% | {output_chars} chars → {output_dur:.1f}s")
+    print(f"{'ASR: ' + asr_name[:20]:<25} | {asr:<10.3f} | {asr/pipeline*100:>6.1f}% | {input_dur:.1f}s → {input_chars} chars")
+    print(f"{'LLM: ' + llm_name[:20]:<25} | {llm:<10.3f} | {llm/pipeline*100:>6.1f}% | {input_tokens}→{output_tokens} tokens")
+    print(f"{'TTS: ' + tts_name[:20]:<25} | {tts:<10.3f} | {tts/pipeline*100:>6.1f}% | {output_chars} chars → {output_dur:.1f}s")
     print("-"*70)
-    print(f"{'Pipeline Total':<18} | {pipeline:<10.3f} | {'100%':<8} | Single container")
-    print(f"{'Network Overhead':<18} | {max(network_overhead, 0):<10.3f} | {'-':<8} | Serialization + transfer")
+    print(f"{'Pipeline Total':<25} | {pipeline:<10.3f} | {'100%':<8} | Single container")
+    print(f"{'Network Overhead':<25} | {max(network_overhead, 0):<10.3f} | {'-':<8} | Serialization + transfer")
     print("-"*70)
-    print(f"{'End-to-End':<18} | {e2e:<10.3f} | {'-':<8} | Record → Response ready")
+    print(f"{'End-to-End':<25} | {e2e:<10.3f} | {'-':<8} | Record → Response ready")
     print("="*70)
     print(f"  RTF (Real-Time Factor): {rtf:.2f}x | "
           f"Throughput: {output_dur/max(network_time, 0.1):.2f}x realtime")
@@ -254,13 +259,14 @@ def main():
             if isinstance(result, dict):
                 audio_response = result.get("audio", b"")
                 metrics = result.get("metrics", {})
+                models = result.get("models", {})
                 transcription = result.get("transcription", "")
                 response = result.get("response", "")
                 
                 print(f"\n📝 You said: \"{transcription}\"")
                 print(f"💬 Response: \"{response}\"")
                 
-                print_metrics(metrics, network_time, record_time)
+                print_metrics(metrics, network_time, record_time, models)
                 session.add_call(metrics, network_time, record_time)
             else:
                 audio_response = result

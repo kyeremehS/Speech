@@ -311,6 +311,7 @@ class Phi3LLM(LLMModel):
                 top_p=0.9,
                 repetition_penalty=1.1,
                 pad_token_id=self.tokenizer.eos_token_id,
+                use_cache=False,
             )
         
         full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -874,7 +875,7 @@ image = (
         "mkdir -p /root/vibevoice_voices && "
         "cp -r /tmp/vibevoice/demo/voices/* /root/vibevoice_voices/"
     )
-    # Orpheus TTS for human-like expressive speech with emotion tags
+    # Orpheus   for human-like expressive speech with emotion tags
     .pip_install("orpheus-speech", "vllm==0.7.3")
     .pip_install("openai", "groq")  # For OpenAI and Groq API models
 )
@@ -890,8 +891,10 @@ _TTS_MODEL = os.getenv("TTS_MODEL", "chatterbox")
 @app.cls(
     image=image,
     gpu="A10G",
-    timeout=600,
-    scaledown_window=300,
+    # timeout=600,
+    min_containers=1,
+    max_containers=1,
+    # scaledown_window=300,
     secrets=[
         modal.Secret.from_dict({
             "ASR_MODEL": _ASR_MODEL,
@@ -899,10 +902,8 @@ _TTS_MODEL = os.getenv("TTS_MODEL", "chatterbox")
             "TTS_MODEL": _TTS_MODEL,
         }),
         modal.Secret.from_name("hf-secret"),
-    ] + (
-        # Include api-keys for both GPT-4o Mini and Groq (Groq key is also stored there)
-        [modal.Secret.from_name("api-keys")] if _LLM_MODEL in ["gpt4omini", "llama31-groq"] else []
-    ),
+        modal.Secret.from_name("api-keys"), 
+     ],
 )
 class SpeechToSpeechService:
     """
@@ -919,6 +920,11 @@ class SpeechToSpeechService:
         
         # Get configuration
         self.config = ModelConfig()
+        
+        # Track loaded models for dynamic switching
+        self.loaded_asr = {}
+        self.loaded_llm = {}
+        self.loaded_tts = {}
         
         print("=" * 70)
         print(f"🚀 MODULAR PIPELINE - Configuration: {self.config}")
@@ -939,14 +945,17 @@ class SpeechToSpeechService:
         # Load models
         self.asr = asr_class()
         self.asr.load()
+        self.loaded_asr[self.config.asr] = self.asr
         print(f"✅ ASR: {self.asr.model_name}")
         
         self.llm = llm_class()
         self.llm.load()
+        self.loaded_llm[self.config.llm] = self.llm
         print(f"✅ LLM: {self.llm.model_name}")
         
         self.tts = tts_class()
         self.tts.load()
+        self.loaded_tts[self.config.tts] = self.tts
         print(f"✅ TTS: {self.tts.model_name}")
         
         # Check VRAM
@@ -954,6 +963,57 @@ class SpeechToSpeechService:
         vram_total = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"\n📊 VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB")
         print("=" * 70)
+    
+    def _get_or_load_model(self, model_type: str, model_key: str):
+        """Get a model, loading it if not already loaded."""
+        import torch
+        
+        if model_type == "asr":
+            if model_key not in self.loaded_asr:
+                print(f"🔄 Loading ASR: {model_key}...")
+                cls = MODEL_REGISTRY["asr"].get(model_key)
+                if not cls:
+                    raise ValueError(f"ASR '{model_key}' not found")
+                model = cls()
+                model.load()
+                self.loaded_asr[model_key] = model
+            return self.loaded_asr[model_key]
+        
+        elif model_type == "llm":
+            if model_key not in self.loaded_llm:
+                print(f"🔄 Loading LLM: {model_key}...")
+                cls = MODEL_REGISTRY["llm"].get(model_key)
+                if not cls:
+                    raise ValueError(f"LLM '{model_key}' not found")
+                model = cls()
+                model.load()
+                self.loaded_llm[model_key] = model
+            return self.loaded_llm[model_key]
+        
+        elif model_type == "tts":
+            if model_key not in self.loaded_tts:
+                print(f"🔄 Loading TTS: {model_key}...")
+                cls = MODEL_REGISTRY["tts"].get(model_key)
+                if not cls:
+                    raise ValueError(f"TTS '{model_key}' not found")
+                model = cls()
+                model.load()
+                self.loaded_tts[model_key] = model
+            return self.loaded_tts[model_key]
+    
+    @modal.method()
+    def get_available_models(self) -> Dict:
+        """Return list of available models for frontend."""
+        return {
+            "asr": list(MODEL_REGISTRY["asr"].keys()),
+            "llm": list(MODEL_REGISTRY["llm"].keys()),
+            "tts": list(MODEL_REGISTRY["tts"].keys()),
+            "current": {
+                "asr": self.config.asr,
+                "llm": self.config.llm,
+                "tts": self.config.tts,
+            }
+        }
     
     def _split_sentences(self, text: str) -> list:
         """Split text into sentences for streaming TTS."""
@@ -1056,16 +1116,28 @@ class SpeechToSpeechService:
         }
     
     @modal.method()
-    def process(self, audio_bytes: bytes, system_prompt: Optional[str] = None) -> Dict:
+    def process(self, audio_bytes: bytes, system_prompt: Optional[str] = None,
+                asr_model: Optional[str] = None, llm_model: Optional[str] = None, 
+                tts_model: Optional[str] = None) -> Dict:
         """
         Complete speech-to-speech pipeline with compression support.
         Compatible with real-time VAD client.
+        
+        Optionally specify models to use:
+            asr_model: "nemo", "whisper", "faster-whisper"
+            llm_model: "phi3", "llama", "gpt4omini", "llama31-groq", "qwen3"
+            tts_model: "chatterbox", "parler", "vibevoice", "orpheus"
         """
         import time
         from scipy.io import wavfile
         import io
         
         t_start = time.time()
+        
+        # Get models (use specified or default)
+        asr = self._get_or_load_model("asr", asr_model) if asr_model else self.asr
+        llm = self._get_or_load_model("llm", llm_model) if llm_model else self.llm
+        tts = self._get_or_load_model("tts", tts_model) if tts_model else self.tts
         
         # Handle compressed input
         input_compressed = False
@@ -1089,18 +1161,18 @@ class SpeechToSpeechService:
             input_duration = 0.0
         
         # Step 1: ASR
-        print(f"🎤 [{self.asr.model_name}] Transcribing...")
-        transcription, asr_time = self.asr.transcribe(audio_bytes)
+        print(f"🎤 [{asr.model_name}] Transcribing...")
+        transcription, asr_time = asr.transcribe(audio_bytes)
         print(f"   ✓ {asr_time:.2f}s: {transcription}")
         
         # Step 2: LLM
-        print(f"🤖 [{self.llm.model_name}] Generating...")
-        response, llm_time = self.llm.generate(transcription, system_prompt)
+        print(f"🤖 [{llm.model_name}] Generating...")
+        response, llm_time = llm.generate(transcription, system_prompt)
         print(f"   ✓ {llm_time:.2f}s: {response}")
         
         # Step 3: TTS
-        print(f"🔊 [{self.tts.model_name}] Synthesizing...")
-        audio_response, output_duration, tts_time = self.tts.synthesize(response)
+        print(f"🔊 [{tts.model_name}] Synthesizing...")
+        audio_response, output_duration, tts_time = tts.synthesize(response)
         print(f"   ✓ {tts_time:.2f}s: {output_duration:.1f}s audio")
         
         # Compress output
@@ -1113,7 +1185,7 @@ class SpeechToSpeechService:
         
         # Print metrics
         print(f"\n{'='*70}")
-        print(f"Pipeline: {self.asr.model_name} → {self.llm.model_name} → {self.tts.model_name}")
+        print(f"Pipeline: {asr.model_name} → {llm.model_name} → {tts.model_name}")
         print(f"Total: {total_time:.2f}s (ASR:{asr_time:.2f}s LLM:{llm_time:.2f}s TTS:{tts_time:.2f}s)")
         print(f"{'='*70}\n")
         
@@ -1123,9 +1195,9 @@ class SpeechToSpeechService:
             "response": response,
             "compressed": True,
             "models": {
-                "asr": self.asr.model_name,
-                "llm": self.llm.model_name,
-                "tts": self.tts.model_name,
+                "asr": asr.model_name,
+                "llm": llm.model_name,
+                "tts": tts.model_name,
             },
             "metrics": {
                 "asr_time": asr_time,
@@ -1153,6 +1225,110 @@ def process_speech_streaming(audio_bytes: bytes):
     service = SpeechToSpeechService()
     for chunk in service.process_streaming.remote_gen(audio_bytes):
         yield chunk
+
+
+# Web API endpoint to list available models (lightweight - no GPU needed)
+@app.function(image=image, timeout=60, gpu=None)
+@modal.web_endpoint(method="GET")
+def get_models() -> dict:
+    """
+    Get list of available models for frontend dropdowns.
+    This is a lightweight endpoint that doesn't require GPU.
+    """
+    config = ModelConfig()
+    return {
+        "asr": list(MODEL_REGISTRY["asr"].keys()),
+        "llm": list(MODEL_REGISTRY["llm"].keys()),
+        "tts": list(MODEL_REGISTRY["tts"].keys()),
+        "current": {
+            "asr": config.asr,
+            "llm": config.llm,
+            "tts": config.tts,
+        }
+    }
+
+
+# Web API endpoint for frontend
+@app.function(image=image, timeout=600)
+@modal.web_endpoint(method="POST")
+def process_web(data: dict) -> dict:
+    """
+    Web endpoint for frontend - accepts JSON with base64 audio.
+    
+    Request: {
+        "audio_base64": "...",
+        "asr_model": "faster-whisper",  # optional
+        "llm_model": "llama31-groq",     # optional
+        "tts_model": "chatterbox"        # optional
+    }
+    Response: {"audio_base64": "...", "transcription": "...", "response": "...", ...}
+    """
+    import base64
+    
+    # Decode input
+    audio_base64 = data.get("audio_base64", "")
+    audio_bytes = base64.b64decode(audio_base64)
+    system_prompt = data.get("system_prompt")
+    
+    asr_model = data.get("asr_model")
+    tts_model = data.get("tts_model")
+    import os
+    cfg = ModelConfig()
+    llm_requested = data.get("llm_model")
+    groq_key = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("groq_api_key")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if llm_requested == "gpt4omini":
+        if openai_key:
+            llm_model = "gpt4omini"
+        elif groq_key:
+            llm_model = "llama31-groq"
+        else:
+            llm_model = cfg.llm
+    elif llm_requested == "llama31-groq":
+        if groq_key:
+            llm_model = "llama31-groq"
+        elif openai_key:
+            llm_model = "gpt4omini"
+        else:
+            llm_model = cfg.llm
+    else:
+        llm_model = llm_requested
+    
+    # Process with optional model selection
+    service = SpeechToSpeechService()
+    try:
+        result = service.process.remote(
+            audio_bytes, 
+            system_prompt,
+            asr_model=asr_model,
+            llm_model=llm_model,
+            tts_model=tts_model
+        )
+    except Exception as e:
+        # Fallback if API key missing or other runtime error
+        print(f"⚠️ Error processing request (likely missing API key): {e}. Falling back to default models.")
+        result = service.process.remote(
+            audio_bytes, 
+            system_prompt
+        )
+    
+    # Encode output for JSON
+    audio_out = result["audio"]
+    # Decompress to WAV for browser playback
+    if result.get("compressed"):
+        audio_out = decompress_mp3_to_wav(audio_out)
+    
+    return {
+        "audio_base64": base64.b64encode(audio_out).decode("utf-8"),
+        "transcription": result["transcription"],
+        "response": result["response"],
+        "models": result["models"],
+        "asr_time": result["metrics"]["asr_time"],
+        "llm_time": result["metrics"]["llm_time"],
+        "tts_time": result["metrics"]["tts_time"],
+        "total_time": result["metrics"]["total_time"],
+        "output_duration": result["metrics"]["output_duration"],
+    }
 
 
 # Local Testing
