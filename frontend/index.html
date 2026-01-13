@@ -1,472 +1,625 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Speech-to-Speech Demo</title>
-    <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            min-height: 100vh;
-            color: #fff;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        
-        h1 {
-            text-align: center;
-            margin-bottom: 10px;
-            font-size: 2rem;
-        }
-        
-        .subtitle {
-            text-align: center;
-            color: #888;
-            margin-bottom: 30px;
-        }
-        
-        .card {
-            background: rgba(255,255,255,0.05);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-        
-        .card h2 {
-            font-size: 1rem;
-            color: #888;
-            margin-bottom: 15px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        .model-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 15px;
-        }
-        
-        .model-select {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .model-select label {
-            font-size: 0.85rem;
-            color: #aaa;
-        }
-        
-        select {
-            padding: 10px;
-            border-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.2);
-            background: rgba(0,0,0,0.3);
-            color: #fff;
-            font-size: 0.9rem;
-            cursor: pointer;
-        }
-        
-        select:focus {
-            outline: none;
-            border-color: #4facfe;
-        }
-        
-        .upload-area {
-            border: 2px dashed rgba(255,255,255,0.2);
-            border-radius: 12px;
-            padding: 40px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        
-        .upload-area:hover {
-            border-color: #4facfe;
-            background: rgba(79,172,254,0.1);
-        }
-        
-        .upload-area.dragover {
-            border-color: #4facfe;
-            background: rgba(79,172,254,0.2);
-        }
-        
-        .upload-icon {
-            font-size: 3rem;
-            margin-bottom: 10px;
-        }
-        
-        #fileInput {
-            display: none;
-        }
-        
-        .btn {
-            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-            border: none;
-            padding: 12px 30px;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-            width: 100%;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(79,172,254,0.4);
-        }
-        
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-        
-        .results {
-            display: none;
-        }
-        
-        .results.show {
-            display: block;
-        }
-        
-        .result-item {
-            margin-bottom: 15px;
-        }
-        
-        .result-item label {
-            display: block;
-            font-size: 0.85rem;
-            color: #4facfe;
-            margin-bottom: 5px;
-        }
-        
-        .result-item p {
-            background: rgba(0,0,0,0.3);
-            padding: 12px;
-            border-radius: 8px;
-            line-height: 1.6;
-        }
-        
-        .timing {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-        
-        .timing-item {
-            background: rgba(0,0,0,0.3);
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-        }
-        
-        .timing-item .value {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #4facfe;
-        }
-        
-        .timing-item .label {
-            font-size: 0.75rem;
-            color: #888;
-            margin-top: 5px;
-        }
-        
-        audio {
-            width: 100%;
-            margin-top: 10px;
-        }
-        
-        .status {
-            text-align: center;
-            padding: 20px;
-            color: #888;
-        }
-        
-        .status.processing {
-            color: #4facfe;
-        }
-        
-        .spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 2px solid rgba(255,255,255,0.3);
-            border-radius: 50%;
-            border-top-color: #4facfe;
-            animation: spin 1s linear infinite;
-            margin-right: 10px;
-            vertical-align: middle;
-        }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        
-        .current-config {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        
-        .config-badge {
-            background: rgba(79,172,254,0.2);
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            color: #4facfe;
-        }
-        
-        .error {
-            background: rgba(255,100,100,0.2);
-            border: 1px solid rgba(255,100,100,0.3);
-            padding: 15px;
-            border-radius: 8px;
-            color: #ff6b6b;
-        }
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Speech-to-Speech Demo</title>
+        <style>
+            :root {
+                --primary: #00f2fe;
+                --secondary: #4facfe;
+                --bg-dark: #0f172a;
+                --card-bg: rgba(30, 41, 59, 0.7);
+                --text-main: #f8fafc;
+                --text-muted: #94a3b8;
+                --accent: #38bdf8;
+                --success: #4ade80;
+                --error: #ef4444;
+            }
 
-        @media (max-width: 600px) {
-            .model-grid, .timing {
-                grid-template-columns: 1fr;
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
             }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🎙️ Speech-to-Speech</h1>
-        <p class="subtitle">Upload audio, get AI response</p>
-        
-        <!-- Current Config Display -->
-        <div class="card">
-            <h2>📊 Current Models (Deployed)</h2>
-            <div class="current-config" id="currentConfig">
-                <span class="config-badge">Loading...</span>
-            </div>
-        </div>
-        
-        <!-- Upload -->
-        <div class="card">
-            <h2>🎤 Upload Audio</h2>
-            <div class="upload-area" id="uploadArea">
-                <div class="upload-icon">📁</div>
-                <p>Drop audio file here or click to upload</p>
-                <p style="color: #666; font-size: 0.85rem; margin-top: 10px;">Supports WAV, MP3, M4A</p>
-            </div>
-            <input type="file" id="fileInput" accept="audio/*">
-            <p id="fileName" style="margin-top: 10px; color: #4facfe;"></p>
-        </div>
-        
-        <!-- Process Button -->
-        <button class="btn" id="processBtn" disabled>Process Audio</button>
-        
-        <!-- Status -->
-        <div class="status" id="status"></div>
-        
-        <!-- Results -->
-        <div class="card results" id="results">
-            <h2>📈 Results</h2>
-            
-            <div class="timing">
-                <div class="timing-item">
-                    <div class="value" id="totalTime">-</div>
-                    <div class="label">Total Time</div>
-                </div>
-                <div class="timing-item">
-                    <div class="value" id="asrTime">-</div>
-                    <div class="label">ASR</div>
-                </div>
-                <div class="timing-item">
-                    <div class="value" id="llmTime">-</div>
-                    <div class="label">LLM</div>
-                </div>
-                <div class="timing-item">
-                    <div class="value" id="ttsTime">-</div>
-                    <div class="label">TTS</div>
-                </div>
-            </div>
-            
-            <div class="result-item">
-                <label>🎤 Transcription</label>
-                <p id="transcription">-</p>
-            </div>
-            
-            <div class="result-item">
-                <label>🤖 AI Response</label>
-                <p id="response">-</p>
-            </div>
-            
-            <div class="result-item">
-                <label>🔊 Audio Response</label>
-                <audio id="audioPlayer" controls></audio>
-            </div>
-        </div>
-    </div>
 
-    <script>
-        // Config - Update this with your Modal endpoint
-        const API_URL = 'https://kyeremehs--speech-modular-process.modal.run';
-        
-        let selectedFile = null;
-        
-        // Elements
-        const uploadArea = document.getElementById('uploadArea');
-        const fileInput = document.getElementById('fileInput');
-        const fileName = document.getElementById('fileName');
-        const processBtn = document.getElementById('processBtn');
-        const status = document.getElementById('status');
-        const results = document.getElementById('results');
-        const currentConfig = document.getElementById('currentConfig');
-        
-        // Upload handling
-        uploadArea.addEventListener('click', () => fileInput.click());
-        
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('dragover');
-        });
-        
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('dragover');
-        });
-        
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-            if (e.dataTransfer.files.length) {
-                handleFile(e.dataTransfer.files[0]);
+            body {
+                min-height: 100vh;
+                font-family: 'Inter', system-ui, -apple-system, sans-serif;
+                background: radial-gradient(circle at top right, #1e293b 0%, #0f172a 100%);
+                color: var(--text-main);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-direction: column;
+                padding: 20px;
+                line-height: 1.6;
             }
-        });
-        
-        fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length) {
-                handleFile(e.target.files[0]);
+
+            .container {
+                max-width: 600px;
+                width: 100%;
+                margin: 0 auto;
+                background: rgba(15, 23, 42, 0.6);
+                border-radius: 24px;
+                box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.5);
+                padding: 40px;
+                backdrop-filter: blur(12px);
+                border: 1px solid rgba(255, 255, 255, 0.1);
             }
-        });
-        
-        function handleFile(file) {
-            selectedFile = file;
-            fileName.textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
-            processBtn.disabled = false;
-        }
-        
-        // Process audio
-        processBtn.addEventListener('click', async () => {
-            if (!selectedFile) return;
-            
-            processBtn.disabled = true;
-            status.innerHTML = '<span class="spinner"></span> Processing audio...';
-            status.className = 'status processing';
-            results.classList.remove('show');
-            
-            try {
-                // Read file as base64
-                const base64Audio = await fileToBase64(selectedFile);
-                
-                const startTime = Date.now();
-                
-                const response = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        audio_base64: base64Audio
-                    })
-                });
-                
-                const clientTime = (Date.now() - startTime) / 1000;
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+
+            header {
+                text-align: center;
+                margin-bottom: 40px;
+            }
+
+            .logo {
+                font-size: 3rem;
+                margin-bottom: 16px;
+                display: inline-block;
+                filter: drop-shadow(0 0 20px rgba(79, 172, 254, 0.4));
+            }
+
+            h1 {
+                font-size: 2.5rem;
+                font-weight: 800;
+                background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 8px;
+                letter-spacing: -1px;
+            }
+
+            .subtitle {
+                color: var(--text-muted);
+                font-size: 1.1rem;
+            }
+
+            .card {
+                background: var(--card-bg);
+                border-radius: 16px;
+                padding: 24px;
+                margin-bottom: 24px;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                transition: transform 0.2s ease, box-shadow 0.2s ease;
+            }
+
+            .card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.3);
+                border-color: rgba(255, 255, 255, 0.1);
+            }
+
+            .card h2 {
+                font-size: 0.9rem;
+                color: var(--accent);
+                margin-bottom: 16px;
+                text-transform: uppercase;
+                letter-spacing: 1.5px;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .current-config {
+                display: flex;
+                gap: 12px;
+                flex-wrap: wrap;
+            }
+
+            .config-badge {
+                background: rgba(56, 189, 248, 0.1);
+                border: 1px solid rgba(56, 189, 248, 0.2);
+                padding: 6px 16px;
+                border-radius: 100px;
+                font-size: 0.85rem;
+                color: var(--accent);
+                font-weight: 500;
+            }
+
+            .btn {
+                background: linear-gradient(135deg, var(--secondary) 0%, var(--primary) 100%);
+                border: none;
+                padding: 16px;
+                border-radius: 12px;
+                color: #fff;
+                font-size: 1.1rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                width: 100%;
+                margin-bottom: 16px;
+                position: relative;
+                overflow: hidden;
+            }
+
+            .btn:hover:not(:disabled) {
+                transform: translateY(-2px);
+                box-shadow: 0 0 20px rgba(79, 172, 254, 0.4);
+            }
+
+            .btn:active:not(:disabled) {
+                transform: translateY(0);
+            }
+
+            .btn:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+                filter: grayscale(100%);
+            }
+
+            #recordBtn.recording {
+                background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
+                animation: pulse 2s infinite;
+            }
+
+            @keyframes pulse {
+                0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+                70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+            }
+
+            .status {
+                text-align: center;
+                padding: 16px;
+                color: var(--text-muted);
+                font-size: 0.95rem;
+                min-height: 56px;
+            }
+
+            .status.processing {
+                color: var(--accent);
+            }
+
+            .spinner {
+                display: inline-block;
+                width: 18px;
+                height: 18px;
+                border: 2px solid rgba(56, 189, 248, 0.3);
+                border-radius: 50%;
+                border-top-color: var(--accent);
+                animation: spin 1s linear infinite;
+                margin-right: 8px;
+                vertical-align: text-bottom;
+            }
+
+            @keyframes spin {
+                to { transform: rotate(360deg); }
+            }
+
+            .results {
+                display: none;
+                animation: slideUp 0.5s ease;
+            }
+
+            .results.show {
+                display: block;
+            }
+
+            @keyframes slideUp {
+                from { opacity: 0; transform: translateY(20px); }
+                to { opacity: 1; transform: none; }
+            }
+
+            .timing {
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 12px;
+                margin-bottom: 24px;
+            }
+
+            .timing-item {
+                background: rgba(0, 0, 0, 0.2);
+                padding: 16px;
+                border-radius: 12px;
+                text-align: center;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+
+            .timing-item .value {
+                font-size: 1.4rem;
+                font-weight: 700;
+                color: var(--success);
+                font-feature-settings: "tnum";
+            }
+
+            .timing-item .label {
+                font-size: 0.75rem;
+                color: var(--text-muted);
+                margin-top: 4px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            .result-item {
+                margin-bottom: 24px;
+            }
+
+            .result-item label {
+                display: block;
+                font-size: 0.9rem;
+                color: var(--text-muted);
+                margin-bottom: 8px;
+                font-weight: 500;
+            }
+
+            .result-item p {
+                background: rgba(0, 0, 0, 0.2);
+                padding: 16px;
+                border-radius: 12px;
+                line-height: 1.7;
+                color: var(--text-main);
+                font-size: 1.05rem;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+
+            audio {
+                width: 100%;
+                height: 40px;
+                border-radius: 8px;
+                margin-top: 8px;
+            }
+
+            audio::-webkit-media-controls-panel {
+                background-color: rgba(255, 255, 255, 0.1);
+            }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 8px;
+                font-size: 0.9rem;
+            }
+
+            th, td {
+                padding: 12px;
+                text-align: left;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            }
+
+            th {
+                color: var(--text-muted);
+                font-weight: 600;
+                font-size: 0.8rem;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            td {
+                color: var(--text-main);
+            }
+
+            .error-msg {
+                background: rgba(239, 68, 68, 0.1);
+                border: 1px solid rgba(239, 68, 68, 0.2);
+                color: var(--error);
+                padding: 16px;
+                border-radius: 12px;
+                text-align: center;
+            }
+
+            @media (max-width: 600px) {
+                .timing {
+                    grid-template-columns: repeat(2, 1fr);
                 }
-                
-                const data = await response.json();
-                
-                // Update current config
-                if (data.models) {
-                    currentConfig.innerHTML = `
-                        <span class="config-badge">ASR: ${data.models.asr}</span>
-                        <span class="config-badge">LLM: ${data.models.llm}</span>
-                        <span class="config-badge">TTS: ${data.models.tts}</span>
-                    `;
+                .container {
+                    padding: 24px;
                 }
-                
-                // Update results
-                document.getElementById('totalTime').textContent = `${clientTime.toFixed(2)}s`;
-                document.getElementById('asrTime').textContent = `${data.asr_time.toFixed(2)}s`;
-                document.getElementById('llmTime').textContent = `${data.llm_time.toFixed(2)}s`;
-                document.getElementById('ttsTime').textContent = `${data.tts_time.toFixed(2)}s`;
-                document.getElementById('transcription').textContent = data.transcription;
-                document.getElementById('response').textContent = data.response;
-                
-                // Play audio
-                const audioBlob = base64ToBlob(data.audio_base64, 'audio/wav');
-                const audioUrl = URL.createObjectURL(audioBlob);
-                document.getElementById('audioPlayer').src = audioUrl;
-                
-                status.textContent = '✅ Complete!';
-                status.className = 'status';
-                results.classList.add('show');
-                
-            } catch (error) {
-                status.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
-                status.className = 'status';
             }
-            
-            processBtn.disabled = false;
-        });
-        
-        // Helpers
-        function fileToBase64(file) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => {
-                    const base64 = reader.result.split(',')[1];
-                    resolve(base64);
-                };
-                reader.onerror = reject;
-                reader.readAsDataURL(file);
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <div class="logo">🎙️</div>
+                <h1>Speech AI</h1>
+                <p class="subtitle">Next-gen voice interaction pipeline</p>
+            </header>
+
+            <!-- Current Config Display -->
+            <div class="card">
+                <h2>📊 Active Pipeline</h2>
+                <div class="current-config" id="currentConfig">
+                    <span class="config-badge">Initializing...</span>
+                </div>
+            </div>
+
+            <!-- Record -->
+            <div class="card">
+                <h2>🎤 Input</h2>
+                <button class="btn" id="recordBtn">Start Recording</button>
+                <p id="recordingStatus" style="text-align: center; color: var(--text-muted); font-size: 0.9rem; min-height: 20px;"></p>
+            </div>
+
+            <!-- Process Button -->
+            <button class="btn" id="processBtn" disabled>Process Audio</button>
+
+            <!-- Status -->
+            <div class="status" id="status"></div>
+
+            <!-- Results -->
+            <div class="card results" id="results">
+                <h2>📈 Performance Metrics</h2>
+
+                <div class="timing">
+                    <div class="timing-item">
+                        <div class="value" id="totalTime">0.00s</div>
+                        <div class="label">Total</div>
+                    </div>
+                    <div class="timing-item">
+                        <div class="value" id="asrTime">0.00s</div>
+                        <div class="label">ASR</div>
+                    </div>
+                    <div class="timing-item">
+                        <div class="value" id="llmTime">0.00s</div>
+                        <div class="label">LLM</div>
+                    </div>
+                    <div class="timing-item">
+                        <div class="value" id="ttsTime">0.00s</div>
+                        <div class="label">TTS</div>
+                    </div>
+                </div>
+
+                <div class="result-item">
+                    <label>You said:</label>
+                    <p id="transcription">...</p>
+                </div>
+
+                <div class="result-item">
+                    <label>AI Response:</label>
+                    <p id="response">...</p>
+                </div>
+
+                <div class="result-item">
+                    <label>Audio Output:</label>
+                    <audio id="audioPlayer" controls></audio>
+                </div>
+
+                <!-- Latency Breakdown Table -->
+                <div class="result-item" id="latencyBreakdownSection" style="display: none">
+                    <label>⏱️ Detailed Latency</label>
+                    <div style="overflow-x: auto; background: rgba(0,0,0,0.2); border-radius: 12px; padding: 0 16px;">
+                        <table id="latencyBreakdown">
+                            <thead>
+                                <tr>
+                                    <th>Component</th>
+                                    <th>Time</th>
+                                    <th>%</th>
+                                    <th>Details</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                        <div id="rtfThroughput" style="padding: 16px 0; color: var(--accent); font-size: 0.9rem; border-top: 1px solid rgba(255,255,255,0.05);"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            // Config - Your Modal endpoint URLs
+            const PROCESS_URL = 'https://samuelkyeremeh224--speech-to-speech-process-web.modal.run';
+            const MODELS_URL = 'https://samuelkyeremeh224--speech-to-speech-get-models.modal.run';
+
+            // Elements
+            const recordBtn = document.getElementById('recordBtn');
+            const recordingStatus = document.getElementById('recordingStatus');
+            const processBtn = document.getElementById('processBtn');
+            const status = document.getElementById('status');
+            const results = document.getElementById('results');
+            const currentConfig = document.getElementById('currentConfig');
+
+            let mediaRecorder;
+            let audioChunks = [];
+            let recordedBlob = null;
+
+            // Helper to format metrics safely
+            const formatMetric = (val, suffix = 's') => {
+                if (val === undefined || val === null || isNaN(val)) return '0.00' + suffix;
+                return val.toFixed(2) + suffix;
+            };
+
+            const formatText = (text) => {
+                if (!text || text === 'undefined') return '...';
+                return text;
+            };
+
+            recordBtn.addEventListener('click', async () => {
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    mediaRecorder.stop();
+                    recordBtn.textContent = 'Start Recording';
+                    recordBtn.classList.remove('recording');
+                    recordingStatus.textContent = 'Recording stopped.';
+                    return;
+                }
+
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+
+                    mediaRecorder.ondataavailable = (e) => {
+                        if (e.data.size > 0) audioChunks.push(e.data);
+                    };
+
+                    mediaRecorder.onstop = () => {
+                        recordedBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                        processBtn.disabled = false;
+                        recordingStatus.textContent = 'Ready to process.';
+                        // Auto-process after recording for seamless experience
+                        processBtn.click();
+                    };
+
+                    mediaRecorder.start();
+                    recordBtn.textContent = 'Stop Recording';
+                    recordBtn.classList.add('recording');
+                    recordingStatus.textContent = 'Listening...';
+                    processBtn.disabled = true;
+                } catch (err) {
+                    recordingStatus.textContent = 'Microphone access denied. Please allow permission.';
+                    console.error(err);
+                }
             });
-        }
-        
-        function base64ToBlob(base64, type) {
-            const bytes = atob(base64);
-            const buffer = new ArrayBuffer(bytes.length);
-            const view = new Uint8Array(buffer);
-            for (let i = 0; i < bytes.length; i++) {
-                view[i] = bytes.charCodeAt(i);
+
+            processBtn.addEventListener('click', async () => {
+                if (!recordedBlob || recordedBlob.size === 0) {
+                    alert("Please record some audio first.");
+                    return;
+                }
+
+                processBtn.disabled = true;
+                status.innerHTML = '<span class="spinner"></span> Processing audio...';
+                status.className = 'status processing';
+                results.classList.remove('show');
+
+                try {
+                    const base64Audio = await blobToBase64(recordedBlob);
+                    const startTime = Date.now();
+
+                    const response = await fetch(PROCESS_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ audio_base64: base64Audio }),
+                    });
+
+                    const clientTime = (Date.now() - startTime) / 1000;
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                    }
+
+                    const data = await response.json();
+                    const metrics = data.metrics || {};
+
+                    // Update UI safely
+                    document.getElementById('totalTime').textContent = formatMetric(clientTime);
+                    document.getElementById('asrTime').textContent = formatMetric(metrics.asr_time);
+                    document.getElementById('llmTime').textContent = formatMetric(metrics.llm_time);
+                    document.getElementById('ttsTime').textContent = formatMetric(metrics.tts_time);
+
+                    document.getElementById('transcription').textContent = formatText(data.transcription);
+                    document.getElementById('response').textContent = formatText(data.response);
+
+                    // Detailed breakdown
+                    const asr = metrics.asr_time || 0;
+                    const llm = metrics.llm_time || 0;
+                    const tts = metrics.tts_time || 0;
+                    const pipeline = metrics.total_pipeline || metrics.total_time || 0.001;
+                    const input_dur = metrics.input_duration || 0;
+                    const output_dur = metrics.output_duration || 0;
+
+                    // Calculate safe percentages
+                    const getPct = (val) => ((val / pipeline) * 100).toFixed(1) + '%';
+
+                    const rtf = input_dur > 0 ? (clientTime / input_dur).toFixed(2) : '0.00';
+                    const throughput = clientTime > 0 ? (output_dur / clientTime).toFixed(2) : '0.00';
+
+                    const latencyRows = [
+                        ['Recording', '-', '-', `${input_dur.toFixed(1)}s captured`],
+                        ['ASR', formatMetric(asr), getPct(asr), 'Speech → Text'],
+                        ['LLM', formatMetric(llm), getPct(llm), 'Text Gen'],
+                        ['TTS', formatMetric(tts), getPct(tts), `Text → ${output_dur.toFixed(1)}s Audio`],
+                        ['Pipeline Total', formatMetric(pipeline), '100%', 'Server Processing'],
+                        ['End-to-End', formatMetric(clientTime), '-', 'Total Latency']
+                    ];
+
+                    const tbody = document.querySelector('#latencyBreakdown tbody');
+                    tbody.innerHTML = '';
+                    latencyRows.forEach((row, i) => {
+                        const tr = document.createElement('tr');
+                        row.forEach(cell => {
+                            const td = document.createElement('td');
+                            td.textContent = cell;
+                            tr.appendChild(td);
+                        });
+                        tbody.appendChild(tr);
+                    });
+
+                    document.getElementById('latencyBreakdownSection').style.display = 'block';
+                    document.getElementById('rtfThroughput').innerHTML =
+                        `Real-Time Factor: <b>${rtf}x</b> &nbsp;|&nbsp; Throughput: <b>${throughput}x</b> realtime`;
+
+                    // Audio Handling
+                    if (data.audio) {
+                        const audioBlob = base64ToBlob(data.audio, 'audio/mp3');
+                        const audioUrl = URL.createObjectURL(audioBlob);
+                        const audioPlayer = document.getElementById('audioPlayer');
+                        audioPlayer.src = audioUrl;
+
+                        // Robust auto-play
+                        const playAudio = async () => {
+                            try {
+                                await audioPlayer.play();
+                            } catch (e) {
+                                console.warn("Auto-play blocked:", e);
+                                status.innerHTML = '✅ Complete! <small>(Tap play to listen)</small>';
+                            }
+                        };
+
+                        audioPlayer.onloadeddata = playAudio;
+                        // Fallback if already loaded
+                        if (audioPlayer.readyState >= 3) {
+                            playAudio();
+                        }
+
+                        status.textContent = '✅ Processing complete';
+                        status.className = 'status';
+                        results.classList.add('show');
+                    } else {
+                        console.error("No audio in response", data);
+                        status.textContent = '⚠️ Response received but no audio';
+                        status.className = 'status';
+                        // Still show results if text is there
+                        if (data.response) {
+                             results.classList.add('show');
+                        }
+                    }
+
+                } catch (error) {
+                    status.innerHTML = `<div class="error-msg">❌ Error: ${error.message}</div>`;
+                    status.className = 'status';
+                } finally {
+                    processBtn.disabled = false;
+                }
+            });
+
+            function base64ToBlob(base64, type) {
+                const bytes = atob(base64);
+                const buffer = new ArrayBuffer(bytes.length);
+                const view = new Uint8Array(buffer);
+                for (let i = 0; i < bytes.length; i++) {
+                    view[i] = bytes.charCodeAt(i);
+                }
+                return new Blob([buffer], {type});
             }
-            return new Blob([buffer], { type });
-        }
-        
-        // Initial config check
-        async function checkConfig() {
-            try {
-                // Quick ping to get models
-                currentConfig.innerHTML = '<span class="config-badge">Checking...</span>';
-            } catch (e) {
-                currentConfig.innerHTML = '<span class="config-badge">Not connected</span>';
+
+            function blobToBase64(blob) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
             }
-        }
-        
-        checkConfig();
-    </script>
-</body>
+
+            // Initial config check
+            async function checkConfig() {
+                try {
+                    const response = await fetch(MODELS_URL);
+                    if (!response.ok) throw new Error('Failed');
+                    const data = await response.json();
+                    currentConfig.innerHTML = `
+                        <span class="config-badge">ASR: ${data.asr || 'Unknown'}</span>
+                        <span class="config-badge">LLM: ${data.llm || 'Unknown'}</span>
+                        <span class="config-badge">TTS: ${data.tts || 'Unknown'}</span>
+                    `;
+                } catch (e) {
+                    currentConfig.innerHTML = '<span class="config-badge" style="border-color: var(--error); color: var(--error)">Offline / Error</span>';
+                }
+            }
+
+            checkConfig();
+        </script>
+    </body>
 </html>

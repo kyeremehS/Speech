@@ -16,13 +16,13 @@ Add a new model in 3 steps:
 Usage:
     # Deploy with default models (nemo, phi3, chatterbox)
     modal deploy modular_main.py
-    
+
     # Deploy with custom models
     ASR_MODEL=whisper LLM_MODEL=llama modal deploy modular_main.py
-    
+
     # Run client
     python client.py
-    
+
     # Test locally
     modal run modular_main.py --audio-path input.wav
 
@@ -41,7 +41,7 @@ def compress_wav_to_mp3(wav_bytes: bytes, bitrate: int = 64) -> bytes:
     """Compress WAV bytes to MP3 for smaller network transfer."""
     import io
     from pydub import AudioSegment
-    
+
     audio = AudioSegment.from_wav(io.BytesIO(wav_bytes))
     buffer = io.BytesIO()
     audio.export(buffer, format="mp3", bitrate=f"{bitrate}k")
@@ -51,7 +51,7 @@ def decompress_mp3_to_wav(mp3_bytes: bytes) -> bytes:
     """Decompress MP3 bytes back to WAV for processing."""
     import io
     from pydub import AudioSegment
-    
+
     audio = AudioSegment.from_mp3(io.BytesIO(mp3_bytes))
     buffer = io.BytesIO()
     audio.export(buffer, format="wav")
@@ -64,8 +64,8 @@ class ModelConfig:
     def __init__(self):
         self.asr = os.getenv("ASR_MODEL", "nemo")
         self.llm = os.getenv("LLM_MODEL", "phi3")
-        self.tts = os.getenv("TTS_MODEL", "chatterbox")
-    
+        self.tts = os.getenv("TTS_MODEL", "parler")
+
     def __str__(self):
         return f"ASR={self.asr}, LLM={self.llm}, TTS={self.tts}"
 
@@ -89,12 +89,12 @@ class ASRModel(ABC):
     @abstractmethod
     def load(self):
         pass
-    
+
     @abstractmethod
     def transcribe(self, audio_bytes: bytes) -> Tuple[str, float]:
         """Returns (transcription, processing_time)"""
         pass
-    
+
     @property
     @abstractmethod
     def model_name(self) -> str:
@@ -104,12 +104,12 @@ class LLMModel(ABC):
     @abstractmethod
     def load(self):
         pass
-    
+
     @abstractmethod
     def generate(self, user_input: str, system_prompt: Optional[str] = None) -> Tuple[str, float]:
         """Returns (response, processing_time)"""
         pass
-    
+
     @property
     @abstractmethod
     def model_name(self) -> str:
@@ -119,12 +119,12 @@ class TTSModel(ABC):
     @abstractmethod
     def load(self):
         pass
-    
+
     @abstractmethod
     def synthesize(self, text: str) -> Tuple[bytes, float, float]:
         """Returns (audio_bytes, audio_duration, processing_time)"""
         pass
-    
+
     @property
     @abstractmethod
     def model_name(self) -> str:
@@ -134,7 +134,7 @@ class TTSModel(ABC):
 @register_model("asr", "nemo")
 class NeMoASR(ASRModel):
     """NeMo RNNT 0.6B - Fast streaming ASR"""
-    
+
     def load(self):
         from nemo.collections.asr.models import EncDecRNNTBPEModel
         print("🎤 Loading NeMo RNNT 0.6B...")
@@ -144,16 +144,16 @@ class NeMoASR(ASRModel):
             .cuda()
             .eval()
         )
-    
+
     def transcribe(self, audio_bytes: bytes) -> Tuple[str, float]:
         import tempfile
         import os
         import time
         from scipy.io import wavfile
         import io
-        
+
         t0 = time.time()
-        
+
         # Validate audio
         try:
             with io.BytesIO(audio_bytes) as f:
@@ -162,12 +162,12 @@ class NeMoASR(ASRModel):
             print(f"   📊 Audio: {sr}Hz, {audio_duration:.2f}s")
         except Exception as e:
             print(f"   ⚠️  Audio validation error: {e}")
-        
+
         # Transcribe
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             temp_path = f.name
-        
+
         try:
             result = self.model.transcribe([temp_path])
             if result and len(result) > 0:
@@ -177,9 +177,9 @@ class NeMoASR(ASRModel):
                 text = ""
         finally:
             os.unlink(temp_path)
-        
+
         return text.strip(), time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "NeMo RNNT 0.6B"
@@ -188,31 +188,31 @@ class NeMoASR(ASRModel):
 @register_model("asr", "whisper")
 class WhisperASR(ASRModel):
     """OpenAI Whisper - High accuracy ASR"""
-    
+
     def load(self):
         import whisper
         print("🎤 Loading Whisper Large-v3...")
         self.model = whisper.load_model("large-v3", device="cuda")
-    
+
     def transcribe(self, audio_bytes: bytes) -> Tuple[str, float]:
         import tempfile
         import os
         import time
-        
+
         t0 = time.time()
-        
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             temp_path = f.name
-        
+
         try:
             result = self.model.transcribe(temp_path)
             text = result["text"]
         finally:
             os.unlink(temp_path)
-        
+
         return text.strip(), time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "Whisper Large-v3"
@@ -221,7 +221,7 @@ class WhisperASR(ASRModel):
 @register_model("asr", "faster-whisper")
 class FasterWhisperASR(ASRModel):
     """Faster-Whisper distil-large-v3 - Optimized CTranslate2 ASR"""
-    
+
     def load(self):
         from faster_whisper import WhisperModel
         print("🎤 Loading Faster-Whisper distil-large-v3...")
@@ -230,18 +230,18 @@ class FasterWhisperASR(ASRModel):
             device="cuda",
             compute_type="float16"
         )
-    
+
     def transcribe(self, audio_bytes: bytes) -> Tuple[str, float]:
         import tempfile
         import os
         import time
-        
+
         t0 = time.time()
-        
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             temp_path = f.name
-        
+
         try:
             segments, info = self.model.transcribe(
                 temp_path,
@@ -252,9 +252,9 @@ class FasterWhisperASR(ASRModel):
             text = " ".join([segment.text for segment in segments])
         finally:
             os.unlink(temp_path)
-        
+
         return text.strip(), time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "Faster-Whisper distil-large-v3"
@@ -264,11 +264,11 @@ class FasterWhisperASR(ASRModel):
 @register_model("llm", "phi3")
 class Phi3LLM(LLMModel):
     """Microsoft Phi-3-Mini 3.8B - Fast efficient LLM"""
-    
+
     def load(self):
         import torch
         from transformers import AutoTokenizer, AutoModelForCausalLM
-        
+
         print("🤖 Loading Phi-3-Mini...")
         self.tokenizer = AutoTokenizer.from_pretrained(
             "microsoft/Phi-3-mini-4k-instruct",
@@ -281,27 +281,27 @@ class Phi3LLM(LLMModel):
             trust_remote_code=True,
         )
         self.model.eval()
-    
+
     def generate(self, user_input: str, system_prompt: Optional[str] = None) -> Tuple[str, float]:
         import torch
         import time
         import re
-        
+
         t0 = time.time()
-        
+
         if not user_input or len(user_input.strip()) < 2:
             return "I didn't catch that. Could you please repeat?", 0.0
-        
+
         system = system_prompt or "You are a helpful voice assistant. Answer directly and completely."
-        
+
         prompt = f"""<|system|>
 {system}<|end|>
 <|user|>
 {user_input}<|end|>
 <|assistant|>"""
-        
+
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
-        
+
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
@@ -312,17 +312,17 @@ class Phi3LLM(LLMModel):
                 repetition_penalty=1.1,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-        
+
         full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         response = full_response.split(user_input)[-1] if user_input in full_response else full_response
         response = re.sub(r'<\|[^|]*\|>', '', response).strip()
-        
+
         # Truncate for voice
         if len(response) > 300:
             response = response[:300].rsplit(' ', 1)[0] + '...'
-        
+
         return response, time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "Phi-3-Mini 3.8B"
@@ -331,11 +331,11 @@ class Phi3LLM(LLMModel):
 @register_model("llm", "llama")
 class LlamaLLM(LLMModel):
     """Meta Llama 3.2 3B - High quality responses"""
-    
+
     def load(self):
         import torch
         from transformers import AutoTokenizer, AutoModelForCausalLM
-        
+
         print("🤖 Loading Llama 3.2 3B...")
         self.tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-3B-Instruct")
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -344,27 +344,27 @@ class LlamaLLM(LLMModel):
             device_map="cuda",
         )
         self.model.eval()
-    
+
     def generate(self, user_input: str, system_prompt: Optional[str] = None) -> Tuple[str, float]:
         import torch
         import time
-        
+
         t0 = time.time()
-        
+
         if not user_input.strip():
             return "I didn't catch that.", 0.0
-        
+
         messages = [
             {"role": "system", "content": system_prompt or "You are a helpful voice assistant."},
             {"role": "user", "content": user_input}
         ]
-        
+
         inputs = self.tokenizer.apply_chat_template(
-            messages, 
-            return_tensors="pt", 
+            messages,
+            return_tensors="pt",
             add_generation_prompt=True
         ).to("cuda")
-        
+
         with torch.no_grad():
             outputs = self.model.generate(
                 inputs,
@@ -372,14 +372,14 @@ class LlamaLLM(LLMModel):
                 temperature=0.7,
                 top_p=0.9,
             )
-        
+
         response = self.tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
-        
+
         if len(response) > 300:
             response = response[:300].rsplit(' ', 1)[0] + '...'
-        
+
         return response, time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "Llama 3.2 3B"
@@ -393,15 +393,15 @@ class GPT4oMiniLLM(LLMModel):
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found. Run: modal secret create api-keys OPENAI_API_KEY=sk-xxx")
-        
+
         from openai import OpenAI
         self.client = OpenAI(api_key=api_key, timeout=10.0)
         print("✅ OpenAI API ready (GPT-4o Mini)")
-    
+
     def generate(self, user_input: str, system_prompt: Optional[str] = None) -> Tuple[str, float]:
         import time
         t0 = time.time()
-        
+
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -416,9 +416,9 @@ class GPT4oMiniLLM(LLMModel):
         except Exception as e:
             print(f"❌ OpenAI API error: {e}")
             text = "I'm having trouble connecting. Please try again."
-        
+
         return text, time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "GPT-4o Mini"
@@ -427,16 +427,16 @@ class GPT4oMiniLLM(LLMModel):
 @register_model("llm", "llama31-groq")
 class Llama31GroqLLM(LLMModel):
     """Meta Llama-3.1-8B-Instruct via Groq API - Ultra-fast inference"""
-    
+
     def load(self):
         import os
         print("🤖 Initializing Groq API (Llama-3.1-8B-Instruct)...")
         # Check multiple possible key names
         api_key = (
-            os.environ.get("GROQ_API_KEY") or 
+            os.environ.get("GROQ_API_KEY") or
             os.environ.get("GROQ_KEY") or
             os.environ.get("groq_api_key") or
-            os.environ.get("api_keys") or 
+            os.environ.get("api_keys") or
             os.environ.get("groq-secret")
         )
         if not api_key:
@@ -444,7 +444,7 @@ class Llama31GroqLLM(LLMModel):
             groq_vars = [k for k in os.environ.keys() if 'groq' in k.lower()]
             raise ValueError(f"GROQ_API_KEY not found. Available groq-related vars: {groq_vars}. "
                            "Run: modal secret create groq-secret GROQ_API_KEY=your_key")
-        
+
         from groq import Groq
         self.client = Groq(api_key=api_key)
         print("✅ Groq API ready (Llama-3.1-8B-Instruct)")
@@ -452,12 +452,12 @@ class Llama31GroqLLM(LLMModel):
     def generate(self, user_input: str, system_prompt: Optional[str] = None) -> Tuple[str, float]:
         import time
         t0 = time.time()
-        
+
         if not user_input.strip():
             return "I didn't catch that.", 0.0
-        
+
         system = system_prompt or "You are a helpful voice assistant. Keep responses concise and natural for speech."
-        
+
         try:
             response = self.client.chat.completions.create(
                 model="llama-3.1-8b-instant",
@@ -474,9 +474,9 @@ class Llama31GroqLLM(LLMModel):
         except Exception as e:
             print(f"❌ Groq API error: {e}")
             text = "I'm having trouble connecting. Please try again."
-        
+
         return text.strip(), time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "Llama-3.1-8B-Instruct (Groq)"
@@ -485,11 +485,11 @@ class Llama31GroqLLM(LLMModel):
 @register_model("llm", "qwen3")
 class Qwen3LLM(LLMModel):
     """Qwen3-1.7B - Fast and efficient small LLM"""
-    
+
     def load(self):
         import torch
         from transformers import AutoTokenizer, AutoModelForCausalLM
-        
+
         print("🤖 Loading Qwen3-1.7B...")
         self.tokenizer = AutoTokenizer.from_pretrained(
             "Qwen/Qwen3-1.7B-Instruct",
@@ -503,32 +503,32 @@ class Qwen3LLM(LLMModel):
         )
         self.model.eval()
         print("✅ Qwen3-1.7B loaded")
-    
+
     def generate(self, user_input: str, system_prompt: Optional[str] = None) -> Tuple[str, float]:
         import torch
         import time
-        
+
         t0 = time.time()
-        
+
         if not user_input.strip():
             return "I didn't catch that.", 0.0
-        
+
         system = system_prompt or "You are a helpful voice assistant. Keep responses concise and natural for speech."
-        
+
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user_input}
         ]
-        
+
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
             enable_thinking=False  # Disable thinking mode for faster responses
         )
-        
+
         inputs = self.tokenizer(text, return_tensors="pt").to("cuda")
-        
+
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
@@ -538,15 +538,15 @@ class Qwen3LLM(LLMModel):
                 do_sample=True,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-        
+
         response = self.tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-        
+
         # Truncate for voice output
         if len(response) > 300:
             response = response[:300].rsplit(' ', 1)[0] + '...'
-        
+
         return response.strip(), time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "Qwen3-1.7B"
@@ -556,39 +556,39 @@ class Qwen3LLM(LLMModel):
 @register_model("tts", "chatterbox")
 class ChatterboxTTS(TTSModel):
     """ChatterboxTTS Turbo 350M - Low latency TTS"""
-    
+
     def load(self):
         from chatterbox.tts_turbo import ChatterboxTurboTTS
         print("🔊 Loading ChatterboxTTS Turbo...")
         self.model = ChatterboxTurboTTS.from_pretrained(device="cuda")
-    
+
     def synthesize(self, text: str) -> Tuple[bytes, float, float]:
         import io
         import time
         import numpy as np
         from scipy.io import wavfile
-        
+
         t0 = time.time()
-        
+
         text = text[:300]  # Safety limit
-        
+
         audio_tensor = self.model.generate(text)
         audio_np = audio_tensor.cpu().numpy().squeeze()
-        
+
         if audio_np.dtype in [np.float32, np.float64]:
             max_val = np.abs(audio_np).max()
             if max_val > 1.0:
                 audio_np = audio_np / max_val
             audio_np = (audio_np * 32767).astype(np.int16)
-        
+
         buffer = io.BytesIO()
         sample_rate = 24000
         wavfile.write(buffer, sample_rate, audio_np)
-        
+
         audio_duration = len(audio_np) / sample_rate
-        
+
         return buffer.getvalue(), audio_duration, time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "ChatterboxTTS Turbo"
@@ -597,64 +597,64 @@ class ChatterboxTTS(TTSModel):
 @register_model("tts", "parler")
 class ParlerTTS(TTSModel):
     """Parler-TTS Mini v1 - Expressive text-to-speech with voice descriptions"""
-    
+
     def load(self):
         import torch
         from parler_tts import ParlerTTSForConditionalGeneration
         from transformers import AutoTokenizer
-        
+
         print("🔊 Loading Parler-TTS Mini v1...")
         self.model = ParlerTTSForConditionalGeneration.from_pretrained(
             "parler-tts/parler-tts-mini-v1"
         ).to("cuda")
         self.tokenizer = AutoTokenizer.from_pretrained("parler-tts/parler-tts-mini-v1")
-        
-        # Default voice description - natural conversational voice
+
+        # Default voice description - cool voice
         self.voice_description = (
-            "A female speaker delivers her words in a clear, friendly manner "
-            "with a moderate pace. The recording quality is excellent with minimal background noise."
+            "A cool, confident speaker with a deep, smooth, and engaging tone. "
+            "The recording quality is excellent with minimal background noise."
         )
-    
+
     def synthesize(self, text: str, voice_description: str = None) -> Tuple[bytes, float, float]:
         import io
         import time
         import numpy as np
         from scipy.io import wavfile
         import torch
-        
+
         t0 = time.time()
-        
+
         text = text[:300]  # Safety limit
         description = voice_description or self.voice_description
-        
+
         # Tokenize inputs
         input_ids = self.tokenizer(description, return_tensors="pt").input_ids.to("cuda")
         prompt_input_ids = self.tokenizer(text, return_tensors="pt").input_ids.to("cuda")
-        
+
         # Generate audio
         with torch.no_grad():
             generation = self.model.generate(
                 input_ids=input_ids,
                 prompt_input_ids=prompt_input_ids
             )
-        
+
         audio_np = generation.cpu().numpy().squeeze()
         sample_rate = self.model.config.sampling_rate  # 44100 Hz for Parler
-        
+
         # Convert to int16 for WAV
         if audio_np.dtype in [np.float32, np.float64]:
             max_val = np.abs(audio_np).max()
             if max_val > 1.0:
                 audio_np = audio_np / max_val
             audio_np = (audio_np * 32767).astype(np.int16)
-        
+
         buffer = io.BytesIO()
         wavfile.write(buffer, sample_rate, audio_np)
-        
+
         audio_duration = len(audio_np) / sample_rate
-        
+
         return buffer.getvalue(), audio_duration, time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "Parler-TTS Mini v1"
@@ -663,21 +663,21 @@ class ParlerTTS(TTSModel):
 @register_model("tts", "vibevoice")
 class VibeVoiceTTS(TTSModel):
     """Microsoft VibeVoice-Realtime-0.5B - Ultra-low latency real-time TTS (~300ms first speech)"""
-    
+
     def load(self):
         import torch
         import copy
         from vibevoice.modular.modeling_vibevoice_streaming_inference import VibeVoiceStreamingForConditionalGenerationInference
         from vibevoice.processor.vibevoice_streaming_processor import VibeVoiceStreamingProcessor
         from huggingface_hub import hf_hub_download
-        
+
         print("🔊 Loading VibeVoice-Realtime-0.5B...")
-        
+
         model_path = "microsoft/VibeVoice-Realtime-0.5B"
-        
+
         # Load processor
         self.processor = VibeVoiceStreamingProcessor.from_pretrained(model_path)
-        
+
         # Load model with SDPA attention (PyTorch native, no flash-attn needed)
         self.model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
             model_path,
@@ -687,7 +687,7 @@ class VibeVoiceTTS(TTSModel):
         )
         self.model.eval()
         self.model.set_ddpm_inference_steps(num_steps=5)  # Fast inference
-        
+
         # Load voice preset (Carter - natural male voice)
         # Available English voices: en-Carter_man, en-Frank_man, en-Davis_man, en-Mike_man, en-Emma_woman, en-Grace_woman
         voice_paths = [
@@ -701,31 +701,31 @@ class VibeVoiceTTS(TTSModel):
             if os.path.exists(path):
                 voice_file = path
                 break
-        
+
         if voice_file is None:
             # List what's available for debugging
             import glob
             available = glob.glob("/root/vibevoice_voices/**/*.pt", recursive=True)
             raise FileNotFoundError(f"Voice preset not found. Checked: {voice_paths}. Available: {available}")
-        
+
         print(f"   Using voice: {voice_file}")
         self.voice_preset = torch.load(voice_file, map_location="cuda", weights_only=False)
         self.copy = copy  # Store for deep copy in generate
-        
+
         print("✅ VibeVoice-Realtime-0.5B loaded")
-    
+
     def synthesize(self, text: str) -> Tuple[bytes, float, float]:
         import io
         import time
         import numpy as np
         from scipy.io import wavfile
         import torch
-        
+
         t0 = time.time()
-        
+
         # Clean and limit text
         text = text[:500].replace("'", "'").replace('"', '"').replace('"', '"')
-        
+
         # Prepare inputs with cached voice prompt
         inputs = self.processor.process_input_with_cached_prompt(
             text=text,
@@ -734,12 +734,12 @@ class VibeVoiceTTS(TTSModel):
             return_tensors="pt",
             return_attention_mask=True,
         )
-        
+
         # Move to GPU
         for k, v in inputs.items():
             if torch.is_tensor(v):
                 inputs[k] = v.to("cuda")
-        
+
         # Generate audio
         with torch.no_grad():
             outputs = self.model.generate(
@@ -751,27 +751,27 @@ class VibeVoiceTTS(TTSModel):
                 verbose=False,
                 all_prefilled_outputs=self.copy.deepcopy(self.voice_preset),
             )
-        
+
         # Extract audio
         audio_tensor = outputs.speech_outputs[0]
         # Convert bfloat16 to float32 (NumPy doesn't support bfloat16)
         audio_np = audio_tensor.float().cpu().numpy().squeeze()
         sample_rate = 24000  # VibeVoice outputs at 24kHz
-        
+
         # Convert to int16 for WAV
         if audio_np.dtype in [np.float32, np.float64]:
             max_val = np.abs(audio_np).max()
             if max_val > 1.0:
                 audio_np = audio_np / max_val
             audio_np = (audio_np * 32767).astype(np.int16)
-        
+
         buffer = io.BytesIO()
         wavfile.write(buffer, sample_rate, audio_np)
-        
+
         audio_duration = len(audio_np) / sample_rate
-        
+
         return buffer.getvalue(), audio_duration, time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "VibeVoice-Realtime-0.5B"
@@ -780,47 +780,47 @@ class VibeVoiceTTS(TTSModel):
 @register_model("tts", "orpheus")
 class OrpheusTTS(TTSModel):
     """Canopy Labs Orpheus-3B - Human-like expressive TTS with emotion tags (~200ms streaming latency)"""
-    
+
     def load(self):
         print("🔊 Loading Orpheus TTS 3B...")
         from orpheus_tts import OrpheusModel
-        
+
         # Load Orpheus model - uses vLLM under the hood
         self.model = OrpheusModel(
             model_name="canopylabs/orpheus-tts-0.1-finetune-prod",
             max_model_len=2048
         )
-        
+
         # Available voices: tara, leah, jess, leo, dan, mia, zac, zoe
         self.default_voice = "tara"  # Natural female voice
-        
+
         print("✅ Orpheus TTS 3B loaded")
-    
+
     def synthesize(self, text: str, voice: str = None) -> Tuple[bytes, float, float]:
         import io
         import time
         import wave
-        
+
         t0 = time.time()
-        
+
         # Clean and limit text
         text = text[:500].replace("'", "'").replace('"', '"').replace('"', '"')
         voice = voice or self.default_voice
-        
+
         # Generate audio using Orpheus streaming API
         audio_chunks = []
         syn_tokens = self.model.generate_speech(
             prompt=text,
             voice=voice,
         )
-        
+
         # Collect all chunks
         for audio_chunk in syn_tokens:
             audio_chunks.append(audio_chunk)
-        
+
         # Combine audio data
         audio_data = b''.join(audio_chunks)
-        
+
         # Create WAV file
         buffer = io.BytesIO()
         sample_rate = 24000
@@ -829,11 +829,11 @@ class OrpheusTTS(TTSModel):
             wf.setsampwidth(2)  # 16-bit
             wf.setframerate(sample_rate)
             wf.writeframes(audio_data)
-        
+
         audio_duration = len(audio_data) / (sample_rate * 2)  # 2 bytes per sample
-        
+
         return buffer.getvalue(), audio_duration, time.time() - t0
-    
+
     @property
     def model_name(self) -> str:
         return "Orpheus TTS 3B"
@@ -877,6 +877,7 @@ image = (
     # Orpheus TTS for human-like expressive speech with emotion tags
     .pip_install("orpheus-speech", "vllm==0.7.3")
     .pip_install("openai", "groq")  # For OpenAI and Groq API models
+    .pip_install("fastapi", "uvicorn")
 )
 
 
@@ -885,7 +886,7 @@ image = (
 # Capture environment variables at deploy time to pass to container
 _ASR_MODEL = os.getenv("ASR_MODEL", "nemo")
 _LLM_MODEL = os.getenv("LLM_MODEL", "phi3")
-_TTS_MODEL = os.getenv("TTS_MODEL", "chatterbox")
+_TTS_MODEL = os.getenv("TTS_MODEL", "parler")
 
 @app.cls(
     image=image,
@@ -907,54 +908,54 @@ _TTS_MODEL = os.getenv("TTS_MODEL", "chatterbox")
 class SpeechToSpeechService:
     """
     Modular Speech-to-Speech Pipeline
-    
+
     Change models via environment variables:
         ASR_MODEL=whisper LLM_MODEL=llama TTS_MODEL=chatterbox
     """
-    
+
     @modal.enter()
     def load_models(self):
         """Load all models on container startup"""
         import torch
-        
+
         # Get configuration
         self.config = ModelConfig()
-        
+
         print("=" * 70)
         print(f"🚀 MODULAR PIPELINE - Configuration: {self.config}")
         print("=" * 70)
-        
+
         # Validate and load models
         asr_class = MODEL_REGISTRY["asr"].get(self.config.asr)
         llm_class = MODEL_REGISTRY["llm"].get(self.config.llm)
         tts_class = MODEL_REGISTRY["tts"].get(self.config.tts)
-        
+
         if not asr_class:
             raise ValueError(f"ASR '{self.config.asr}' not found. Available: {list(MODEL_REGISTRY['asr'].keys())}")
         if not llm_class:
             raise ValueError(f"LLM '{self.config.llm}' not found. Available: {list(MODEL_REGISTRY['llm'].keys())}")
         if not tts_class:
             raise ValueError(f"TTS '{self.config.tts}' not found. Available: {list(MODEL_REGISTRY['tts'].keys())}")
-        
+
         # Load models
         self.asr = asr_class()
         self.asr.load()
         print(f"✅ ASR: {self.asr.model_name}")
-        
+
         self.llm = llm_class()
         self.llm.load()
         print(f"✅ LLM: {self.llm.model_name}")
-        
+
         self.tts = tts_class()
         self.tts.load()
         print(f"✅ TTS: {self.tts.model_name}")
-        
+
         # Check VRAM
         vram_used = torch.cuda.memory_allocated() / 1e9
         vram_total = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"\n📊 VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB")
         print("=" * 70)
-    
+
     def _split_sentences(self, text: str) -> list:
         """Split text into sentences for streaming TTS."""
         import re
@@ -973,7 +974,7 @@ class SpeechToSpeechService:
         if buffer:
             merged.append(buffer)
         return merged if merged else [text]
-    
+
     @modal.method()
     def process_streaming(self, audio_bytes: bytes, system_prompt: Optional[str] = None):
         """
@@ -983,26 +984,30 @@ class SpeechToSpeechService:
         import time
         from scipy.io import wavfile
         import io
-        
+
         t_start = time.time()
-        
+
         # Handle compressed input
+        if not audio_bytes:
+            print("❌ Input audio bytes are empty")
+            return {"error": "Empty input audio"}
+
         if not audio_bytes.startswith(b'RIFF'):
             try:
                 audio_bytes = decompress_mp3_to_wav(audio_bytes)
             except Exception:
                 pass
-        
+
         # Step 1: ASR
         print(f"🎤 [{self.asr.model_name}] Transcribing...")
         transcription, asr_time = self.asr.transcribe(audio_bytes)
         print(f"   ✓ {asr_time:.2f}s: {transcription}")
-        
+
         # Step 2: LLM
         print(f"🤖 [{self.llm.model_name}] Generating...")
         response, llm_time = self.llm.generate(transcription, system_prompt)
         print(f"   ✓ {llm_time:.2f}s: {response}")
-        
+
         # Yield metadata first
         yield {
             "type": "metadata",
@@ -1011,23 +1016,23 @@ class SpeechToSpeechService:
             "asr_time": asr_time,
             "llm_time": llm_time,
         }
-        
+
         # Step 3: Streaming TTS - sentence by sentence
         sentences = self._split_sentences(response)
         print(f"🔊 [{self.tts.model_name}] Streaming {len(sentences)} chunks...")
-        
+
         total_tts_time = 0
         total_duration = 0
-        
+
         for i, sentence in enumerate(sentences):
             t0 = time.time()
             audio_chunk, chunk_duration, chunk_time = self.tts.synthesize(sentence)
             audio_chunk = compress_wav_to_mp3(audio_chunk)
             total_tts_time += chunk_time
             total_duration += chunk_duration
-            
+
             print(f"   ✓ Chunk {i+1}/{len(sentences)}: {chunk_time:.2f}s")
-            
+
             yield {
                 "type": "audio",
                 "audio": audio_chunk,
@@ -1036,13 +1041,13 @@ class SpeechToSpeechService:
                 "chunk_duration": chunk_duration,
                 "compressed": True,
             }
-        
+
         # Yield final metrics
         total_time = time.time() - t_start
         print(f"\n{'='*70}")
         print(f"Streaming complete: {total_time:.2f}s total, {len(sentences)} chunks")
         print(f"{'='*70}\n")
-        
+
         yield {
             "type": "done",
             "metrics": {
@@ -1054,7 +1059,7 @@ class SpeechToSpeechService:
                 "chunks": len(sentences),
             }
         }
-    
+
     @modal.method()
     def process(self, audio_bytes: bytes, system_prompt: Optional[str] = None) -> Dict:
         """
@@ -1064,13 +1069,17 @@ class SpeechToSpeechService:
         import time
         from scipy.io import wavfile
         import io
-        
+
         t_start = time.time()
-        
+
         # Handle compressed input
         input_compressed = False
+        if not audio_bytes:
+            print("❌ Input audio bytes are empty")
+            return {"error": "Empty input audio"}
+
         original_size = len(audio_bytes)
-        
+
         if not audio_bytes.startswith(b'RIFF'):
             try:
                 print(f"📦 Decompressing input: {original_size} bytes")
@@ -1079,7 +1088,7 @@ class SpeechToSpeechService:
                 input_compressed = True
             except Exception as e:
                 print(f"⚠️  Decompression failed, assuming WAV: {e}")
-        
+
         # Get input duration
         try:
             with io.BytesIO(audio_bytes) as f:
@@ -1087,36 +1096,36 @@ class SpeechToSpeechService:
                 input_duration = len(data) / sr
         except:
             input_duration = 0.0
-        
+
         # Step 1: ASR
         print(f"🎤 [{self.asr.model_name}] Transcribing...")
         transcription, asr_time = self.asr.transcribe(audio_bytes)
         print(f"   ✓ {asr_time:.2f}s: {transcription}")
-        
+
         # Step 2: LLM
         print(f"🤖 [{self.llm.model_name}] Generating...")
         response, llm_time = self.llm.generate(transcription, system_prompt)
         print(f"   ✓ {llm_time:.2f}s: {response}")
-        
+
         # Step 3: TTS
         print(f"🔊 [{self.tts.model_name}] Synthesizing...")
         audio_response, output_duration, tts_time = self.tts.synthesize(response)
         print(f"   ✓ {tts_time:.2f}s: {output_duration:.1f}s audio")
-        
+
         # Compress output
         original_audio_size = len(audio_response)
         audio_response = compress_wav_to_mp3(audio_response)
         compressed_size = len(audio_response)
         print(f"📦 Compressed output: {original_audio_size} → {compressed_size} bytes")
-        
+
         total_time = time.time() - t_start
-        
+
         # Print metrics
         print(f"\n{'='*70}")
         print(f"Pipeline: {self.asr.model_name} → {self.llm.model_name} → {self.tts.model_name}")
         print(f"Total: {total_time:.2f}s (ASR:{asr_time:.2f}s LLM:{llm_time:.2f}s TTS:{tts_time:.2f}s)")
         print(f"{'='*70}\n")
-        
+
         return {
             "audio": audio_response,
             "transcription": transcription,
@@ -1147,6 +1156,80 @@ def process_speech(audio_bytes: bytes) -> dict:
     service = SpeechToSpeechService()
     return service.process.remote(audio_bytes)
 
+# FastAPI App for Web Endpoint with CORS
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+import base64
+
+web_app = FastAPI()
+
+web_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@web_app.post("/")
+async def process_web_route(data: dict):
+    """Web endpoint for the frontend"""
+    # Decode input
+    audio_b64 = data.get("audio") or data.get("audio_base64")
+    if not audio_b64:
+        print("❌ No audio data found in request")
+        return {"error": "No audio provided"}
+
+    # Handle data URI scheme if present
+    if "base64," in audio_b64:
+        audio_b64 = audio_b64.split("base64,")[1]
+
+    try:
+        audio_bytes = base64.b64decode(audio_b64)
+    except Exception as e:
+        return {"error": f"Invalid base64: {str(e)}"}
+
+    print(f"📦 Received {len(audio_bytes)} bytes audio")
+
+    # Validate audio size
+    if len(audio_bytes) == 0:
+        print("❌ Received 0 bytes audio")
+        return {"error": "Received empty audio file"}
+
+    # Process
+    service = SpeechToSpeechService()
+    try:
+        # Call the Modal service
+        result = await service.process.remote.aio(audio_bytes)
+    except Exception as e:
+        print(f"❌ Processing failed: {e}")
+        return {"error": str(e)}
+
+    # Encode output audio to base64
+    if result.get("audio"):
+        result["audio"] = base64.b64encode(result["audio"]).decode("utf-8")
+        print(f"✅ Returning audio ({len(result['audio'])} chars)")
+    else:
+        print("⚠️ No audio in result")
+
+    return result
+
+@app.function(image=image, timeout=600)
+@modal.asgi_app()
+def process_web():
+    return web_app
+
+@app.function(image=image)
+@modal.web_endpoint()
+def get_models():
+    """Return current model configuration for frontend"""
+    config = ModelConfig()
+    return {
+        "asr": config.asr,
+        "llm": config.llm,
+        "tts": config.tts
+    }
+
 @app.function(image=image, timeout=600)
 def process_speech_streaming(audio_bytes: bytes):
     """Streaming wrapper - yields audio chunks for lower perceived latency"""
@@ -1160,25 +1243,25 @@ def process_speech_streaming(audio_bytes: bytes):
 def main(audio_path: str):
     """
     Local testing entrypoint
-    
+
     Usage:
         modal run modular_main.py --audio-path input.wav
     """
     print(f"📂 Reading {audio_path}...")
     with open(audio_path, "rb") as f:
         audio_bytes = f.read()
-    
+
     config = ModelConfig()
     print(f"🎯 Using configuration: {config}\n")
-    
+
     service = SpeechToSpeechService()
     result = service.process.remote(audio_bytes)
-    
+
     # Save output
     output_path = "output.wav"
     audio_out = decompress_mp3_to_wav(result["audio"]) if result.get("compressed") else result["audio"]
     with open(output_path, "wb") as f:
         f.write(audio_out)
-    
+
     print(f"\n✅ Output saved to {output_path}")
     print(f"   Models: {result['models']}")
