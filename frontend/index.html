@@ -317,13 +317,6 @@
                 <p class="subtitle"> Real-time voice interaction</p>
             </header>
 
-            <!-- Current Config Display -->
-            <div class="card">
-                <h2>📊 Active Pipeline</h2>
-                <div class="current-config" id="currentConfig">
-                    <span class="config-badge">Initializing...</span>
-                </div>
-            </div>
 
             <!-- Record -->
             <div class="card">
@@ -408,7 +401,6 @@
             const processBtn = document.getElementById('processBtn');
             const status = document.getElementById('status');
             const results = document.getElementById('results');
-            const currentConfig = document.getElementById('currentConfig');
 
             let mediaRecorder;
             let audioChunks = [];
@@ -620,23 +612,6 @@
                 });
             }
 
-            // Initial config check
-            async function checkConfig() {
-                try {
-                    const response = await fetch(MODELS_URL);
-                    if (!response.ok) throw new Error('Failed');
-                    const data = await response.json();
-                    currentConfig.innerHTML = `
-                        <span class="config-badge">ASR: ${data.asr || 'Unknown'}</span>
-                        <span class="config-badge">LLM: ${data.llm || 'Unknown'}</span>
-                        <span class="config-badge">TTS: ${data.tts || 'Unknown'}</span>
-                    `;
-                } catch (e) {
-                    currentConfig.innerHTML = '<span class="config-badge" style="border-color: var(--error); color: var(--error)">Offline / Error</span>';
-                }
-            }
-
-            checkConfig();
         </script>
     </body>
 </html>
