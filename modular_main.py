@@ -1800,10 +1800,14 @@ def process_web(data: dict) -> dict:
 
 @app.function(image=image, timeout=600)
 @modal.fastapi_endpoint(method="POST")
-def process_web_stream_text(data: dict):
+async def process_web_stream_text(req):
     from fastapi.responses import StreamingResponse
     import base64
-    audio_base64 = data.get("audio_base64", "") if data else ""
+    try:
+        body = await req.body()
+        audio_base64 = body.decode("utf-8")
+    except Exception:
+        audio_base64 = ""
     audio_bytes = base64.b64decode(audio_base64) if audio_base64 else b""
     cfg = ModelConfig()
     asr_model = data.get("asr_model")

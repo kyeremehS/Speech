@@ -472,8 +472,8 @@
 
                     const streaming = fetch(STREAM_TEXT_URL, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ audio_base64: base64Audio }),
+                        headers: { 'Content-Type': 'text/plain' },
+                        body: base64Audio,
                     });
                     (async () => {
                         try {
