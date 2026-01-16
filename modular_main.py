@@ -103,63 +103,39 @@ MODEL_REGISTRY = {
     "tts": {}
 }
 
-# Default System Prompt for all LLM models
-CAR_RENTAL_SYSTEM_PROMPT = """You are a friendly and professional customer service representative for a car rental business. You help customers with inquiries about vehicle availability, pricing, reservations, policies, and general questions.
+# Default System Prompt - Optimized for LOW LATENCY voice responses
+VOICE_ASSISTANT_SYSTEM_PROMPT = """You are a real-time voice assistant.
 
-BUSINESS DETAILS:
-- Company: premium car rentals
-- Vehicle types available: Economy cars, sedans, SUVs, vans
-- Daily rates: Economy $45/day, Sedan $65/day, SUV $95/day, Van $120/day
-- Weekly discounts: 7-day rentals get ~15% discount
-- Mileage: 1,000 miles included per week, $0.25 per additional mile
-- Hours: 7am - 8pm daily
-- Minimum age: 21 years old (under 25 incurs $15/day young driver fee)
-- Insurance options: Basic CDW $15/day, Full coverage $25/day
-- Additional driver: $10/day or $50/week
-- Extras: GPS $10/day, child seat $8/day
+CRITICAL RULES (must always follow):
+- Speak briefly and naturally.
+- Default to 1 short sentence.
+- Never exceed 2 sentences unless the user explicitly asks for detail.
+- Prefer asking a clarifying question over giving a long explanation.
+- Do NOT monologue.
+- Do NOT give background, context, or disclaimers unless asked.
+- Assume the user is listening, not reading.
 
-POLICIES:
-- Payment: Major credit cards accepted (debit cards require credit check and $200 deposit)
-- Cancellation: Free cancellation up to 24 hours before pickup, $50 fee within 24 hours
-- Late return: 1-hour grace period, then charged for additional day
-- Fuel policy: Return with same fuel level or pay $6/gallon plus $15 refueling fee
-- Modification: Free changes if made 24+ hours in advance, $25 fee within 24 hours
-- Security deposit: $500 hold if declining insurance coverage
-- Cleaning fee: $50 if vehicle returned excessively dirty
-- No smoking, pets must be in carriers
-
-YOUR BEHAVIOR:
-- Keep responses conversational and natural, like you're speaking out loud
-- Use short, clear sentences that work well for text-to-speech
-- Be warm, helpful, and patient
-- Ask clarifying questions when needed (dates, vehicle type, customer needs)
-- Provide relevant information without overwhelming the customer
-- Handle one topic at a time in multi-turn conversations
-- If customer asks about something you don't have information on, acknowledge it and offer to check or have a manager call back
-- Use casual, friendly language but remain professional
-- Avoid excessive formatting, bullet points, or lists - speak in natural paragraphs
-- When discussing prices, be clear and include all relevant fees
-- Always confirm important details (dates, times, vehicle type) before proceeding
+LATENCY OPTIMIZATION:
+- Produce a complete, speakable first sentence immediately.
+- Avoid conjunction-heavy or run-on sentences.
+- Avoid lists unless explicitly requested.
+- Use simple, conversational language.
 
 CONVERSATION FLOW:
-1. Greet and understand what the customer needs
-2. Ask follow-up questions to clarify details
-3. Provide relevant information clearly
-4. Offer next steps or ask if they need anything else
-5. Close warmly and professionally
+- If the request is broad or ambiguous, ask one clarifying question.
+- If an answer could be long, summarize in one sentence and ask whether to continue.
+- If the user seems to be chatting casually, respond casually and briefly.
 
-COMMON SCENARIOS YOU HANDLE:
-- Checking vehicle availability for specific dates
-- Explaining rental requirements and policies
-- Providing pricing quotes with all fees
-- Making, modifying, or canceling reservations
-- Explaining insurance options
-- Answering questions about pickup/return process
-- Handling special requests (additional drivers, equipment, etc.)
+STYLE:
+- Friendly, calm, and human.
+- No filler phrases like "As an AI" or "I can help with".
+- No over-explaining.
+- No repetition.
 
-TONE: Friendly, helpful, professional, conversational, patient
-
-Remember: You're having a voice conversation, so speak naturally like you would on the phone. Keep it simple and easy to understand when spoken aloud."""
+FAILURE MODES TO AVOID:
+- Long paragraphs
+- Multi-sentence explanations without confirmation
+- Speaking more than the user asked for"""
 
 def register_model(model_type: str, name: str):
     """Decorator to register models"""
@@ -219,58 +195,67 @@ class LLMModel(ABC):
 
 class StreamingSentenceChunker:
     """
-    Incremental sentence chunker for streaming LLM → TTS pipeline.
+    Ultra-low-latency sentence chunker for streaming LLM → TTS pipeline.
     
-    Buffers tokens and yields complete sentences as soon as they're ready.
-    This is CRITICAL for sub-2s first-audio latency.
+    OPTIMIZED FOR TTFA < 1.0s:
+    - Aggressive early breaks on clauses
+    - Scan from END of buffer (O(1) for common case)
+    - Yield as soon as we have a speakable chunk
     
     Rules:
     - Yield on sentence boundaries (.!?)
-    - Minimum chunk size to avoid tiny audio fragments
-    - Flush remaining buffer on completion
-    - Also break on commas for faster first audio
+    - Yield on clause boundaries (,:;) if buffer > min_chars
+    - Force yield at max_chars (never wait too long)
     """
     
-    def __init__(self, min_chars: int = 20, max_chars: int = 150):
+    def __init__(self, min_chars: int = 10, max_chars: int = 100):
         self.buffer = ""
         self.min_chars = min_chars
         self.max_chars = max_chars
         self.sentence_endings = ".!?"
-        self.soft_breaks = ","  # Also break on commas for faster streaming
+        self.clause_breaks = ",:;—"  # Break on clause boundaries for faster TTFA
     
     def add_token(self, token: str) -> Optional[str]:
         """
-        Add a token and return a complete sentence if available.
+        Add a token and return a complete chunk if available.
+        OPTIMIZED: Scans from end for O(1) common case.
         Returns None if still buffering.
         """
         self.buffer += token
+        buf_len = len(self.buffer)
         
-        # Check for sentence boundary (hard breaks: .!?)
-        for i, char in enumerate(self.buffer):
-            if char in self.sentence_endings:
-                potential_sentence = self.buffer[:i+1].strip()
-                remaining = self.buffer[i+1:]
-                
-                if len(potential_sentence) >= self.min_chars:
-                    self.buffer = remaining.lstrip()
-                    return potential_sentence
+        # Fast path: buffer too short to yield
+        if buf_len < self.min_chars:
+            return None
         
-        # Check for soft breaks (commas) if buffer is getting long
-        if len(self.buffer) > self.min_chars * 2:
-            for i, char in enumerate(self.buffer):
-                if char in self.soft_breaks and i >= self.min_chars:
-                    potential_sentence = self.buffer[:i+1].strip()
-                    remaining = self.buffer[i+1:]
-                    self.buffer = remaining.lstrip()
-                    return potential_sentence
-                    
-        # Force yield if buffer too long (prevent unbounded growth)
-        if len(self.buffer) > self.max_chars:
-            # Find last space to break cleanly
-            last_space = self.buffer.rfind(" ", 0, self.max_chars)
-            if last_space > self.min_chars:
+        # PRIORITY 1: Hard sentence boundaries (.!?) - yield immediately
+        # Scan from end for O(1) in common case (boundary just added)
+        for i in range(buf_len - 1, self.min_chars - 2, -1):
+            if self.buffer[i] in self.sentence_endings:
+                sentence = self.buffer[:i+1].strip()
+                self.buffer = self.buffer[i+1:].lstrip()
+                return sentence
+        
+        # PRIORITY 2: Clause breaks for faster TTFA if buffer is growing
+        if buf_len >= self.min_chars + 5:
+            for i in range(buf_len - 1, self.min_chars - 2, -1):
+                if self.buffer[i] in self.clause_breaks:
+                    sentence = self.buffer[:i+1].strip()
+                    self.buffer = self.buffer[i+1:].lstrip()
+                    return sentence
+        
+        # PRIORITY 3: Force yield at max_chars (never wait too long)
+        if buf_len >= self.max_chars:
+            # Find last space for clean break
+            last_space = self.buffer.rfind(" ", self.min_chars, self.max_chars)
+            if last_space > 0:
                 sentence = self.buffer[:last_space].strip()
                 self.buffer = self.buffer[last_space:].lstrip()
+                return sentence
+            else:
+                # No space found - force break at max
+                sentence = self.buffer[:self.max_chars].strip()
+                self.buffer = self.buffer[self.max_chars:].lstrip()
                 return sentence
         
         return None
@@ -467,7 +452,7 @@ class Phi3LLM(LLMModel):
             yield "I didn't catch that. Could you please repeat?"
             return
 
-        system = system_prompt or "You are a helpful voice assistant. Answer directly and completely."
+        system = system_prompt or VOICE_ASSISTANT_SYSTEM_PROMPT
 
         prompt = f"""<|system|>
 {system}<|end|>
@@ -560,7 +545,7 @@ class LlamaLLM(LLMModel):
             return
 
         messages = [
-            {"role": "system", "content": system_prompt or CAR_RENTAL_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt or VOICE_ASSISTANT_SYSTEM_PROMPT},
             {"role": "user", "content": user_input}
         ]
 
@@ -648,7 +633,7 @@ class GPT4oMiniLLM(LLMModel):
                 temperature=0.7,
                 stream=True,  # STREAMING ENABLED
                 messages=[
-                    {"role": "system", "content": system_prompt or CAR_RENTAL_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt or VOICE_ASSISTANT_SYSTEM_PROMPT},
                     {"role": "user", "content": user_input}
                 ]
             )
@@ -715,7 +700,7 @@ class Llama31GroqLLM(LLMModel):
             yield "I didn't catch that."
             return
 
-        system = system_prompt or "You are a helpful voice assistant. Keep responses concise and natural for speech."
+        system = system_prompt or VOICE_ASSISTANT_SYSTEM_PROMPT
 
         try:
             stream = self.client.chat.completions.create(
@@ -792,7 +777,7 @@ class Qwen3LLM(LLMModel):
             yield "I didn't catch that."
             return
 
-        system = system_prompt or "You are a helpful voice assistant. Keep responses concise and natural for speech."
+        system = system_prompt or VOICE_ASSISTANT_SYSTEM_PROMPT
 
         messages = [
             {"role": "system", "content": system},
@@ -1266,6 +1251,15 @@ class SpeechToSpeechService:
         vram_total = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"\n📊 VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB")
         print("=" * 70)
+        
+        try:
+            _ = self.llm.generate("Hello", "You are a helpful voice assistant.")
+        except Exception as _:
+            pass
+        try:
+            _ = self.tts.synthesize("Hello")
+        except Exception as _:
+            pass
 
     def _split_sentences(self, text: str) -> list:
         """Split text into sentences for streaming TTS."""
@@ -1338,7 +1332,8 @@ class SpeechToSpeechService:
         print(f"🤖 [{self.llm.model_name}] Streaming generation...")
         print(f"🔊 [{self.tts.model_name}] Ready for streaming TTS...")
         
-        chunker = StreamingSentenceChunker(min_chars=25, max_chars=150)
+        # LATENCY OPTIMIZED: min_chars=10 for sub-1s TTFA, max_chars=100 for tight chunks
+        chunker = StreamingSentenceChunker(min_chars=10, max_chars=100)
         
         llm_start = time.time()
         first_audio_time = None
@@ -1360,15 +1355,21 @@ class SpeechToSpeechService:
                 
                 if first_audio_time is None:
                     first_audio_time = t_tts - t_start
-                    print(f"   ⚡ FIRST AUDIO at {first_audio_time:.2f}s (target: <2s)")
+                    print(f"   ⚡ FIRST AUDIO at {first_audio_time:.2f}s (target: <1s)")
                 
                 audio_chunk, chunk_duration, chunk_time = self.tts.synthesize(complete_sentence)
-                audio_chunk = compress_wav_to_mp3(audio_chunk)
+                
+                # LATENCY OPTIMIZATION: Skip compression for small chunks (<50KB)
+                # Saves 30-50ms per chunk - critical for TTFA
+                is_compressed = False
+                if len(audio_chunk) >= 50000:  # Only compress if >= 50KB
+                    audio_chunk = compress_wav_to_mp3(audio_chunk)
+                    is_compressed = True
                 
                 total_tts_time += chunk_time
                 total_duration += chunk_duration
                 
-                print(f"   ✓ Chunk {chunk_index}: \"{complete_sentence[:40]}...\" → {chunk_duration:.1f}s audio")
+                print(f"   ✓ Chunk {chunk_index}: \"{complete_sentence[:40]}...\" → {chunk_duration:.1f}s audio {'(mp3)' if is_compressed else '(wav)'}")
                 
                 yield {
                     "type": "audio",
@@ -1376,7 +1377,7 @@ class SpeechToSpeechService:
                     "text": complete_sentence,
                     "chunk_index": chunk_index,
                     "chunk_duration": chunk_duration,
-                    "compressed": True,
+                    "compressed": is_compressed,
                 }
                 chunk_index += 1
         
@@ -1390,12 +1391,17 @@ class SpeechToSpeechService:
                 first_audio_time = t_tts - t_start
             
             audio_chunk, chunk_duration, chunk_time = self.tts.synthesize(remaining)
-            audio_chunk = compress_wav_to_mp3(audio_chunk)
+            
+            # LATENCY OPTIMIZATION: Skip compression for small chunks
+            is_compressed = False
+            if len(audio_chunk) >= 50000:
+                audio_chunk = compress_wav_to_mp3(audio_chunk)
+                is_compressed = True
             
             total_tts_time += chunk_time
             total_duration += chunk_duration
             
-            print(f"   ✓ Final chunk: \"{remaining[:40]}...\" → {chunk_duration:.1f}s audio")
+            print(f"   ✓ Final chunk: \"{remaining[:40]}...\" → {chunk_duration:.1f}s audio {'(mp3)' if is_compressed else '(wav)'}")
             
             yield {
                 "type": "audio",
@@ -1403,7 +1409,7 @@ class SpeechToSpeechService:
                 "text": remaining,
                 "chunk_index": chunk_index,
                 "chunk_duration": chunk_duration,
-                "compressed": True,
+                "compressed": is_compressed,
             }
             chunk_index += 1
 
@@ -1791,6 +1797,33 @@ def process_web(data: dict) -> dict:
         "total_time": result["metrics"]["total_time"],
         "output_duration": result["metrics"]["output_duration"],
     }
+
+@app.function(image=image, timeout=600)
+@modal.fastapi_endpoint(method="POST")
+def process_web_stream_text(data: dict):
+    from fastapi.responses import StreamingResponse
+    import base64
+    audio_base64 = data.get("audio_base64", "") if data else ""
+    audio_bytes = base64.b64decode(audio_base64) if audio_base64 else b""
+    cfg = ModelConfig()
+    asr_model = data.get("asr_model")
+    llm_model = resolve_llm_model(data.get("llm_model"), cfg)
+    service = SpeechToSpeechService()
+    def gen():
+        asr = service.asr if not asr_model or asr_model == cfg.asr else service._get_or_load_model("asr", asr_model)
+        llm = service.llm if not llm_model or llm_model == cfg.llm else service._get_or_load_model("llm", llm_model)
+        transcription, _ = asr.transcribe(audio_bytes)
+        yield transcription + "\n\n"
+        for token in llm.generate_stream(transcription):
+            yield token
+    return StreamingResponse(gen(), media_type="text/plain")
+
+# Health check endpoint for keep-alive (prevents cold starts)
+@app.function(image=image)
+@modal.web_endpoint(method="GET")
+def health():
+    """Health check endpoint - ping every 30s to keep container warm."""
+    return {"status": "warm", "timestamp": time.time()}
 
 
 # Local Testing

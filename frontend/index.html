@@ -394,6 +394,7 @@
             // Config - Your Modal endpoint URLs
             const PROCESS_URL = 'https://samuelkyeremeh224--speech-to-speech-process-web.modal.run';
             const MODELS_URL = 'https://samuelkyeremeh224--speech-to-speech-get-models.modal.run';
+            const STREAM_TEXT_URL = 'https://samuelkyeremeh224--speech-to-speech-process-web-stream-text.modal.run';
 
             // Elements
             const recordBtn = document.getElementById('recordBtn');
@@ -469,6 +470,28 @@
                     const base64Audio = await blobToBase64(recordedBlob);
                     const startTime = Date.now();
 
+                    const streaming = fetch(STREAM_TEXT_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ audio_base64: base64Audio }),
+                    });
+                    (async () => {
+                        try {
+                            const res = await streaming;
+                            if (res.ok && res.body) {
+                                const reader = res.body.getReader();
+                                const decoder = new TextDecoder();
+                                let text = '';
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) break;
+                                    text += decoder.decode(value);
+                                    document.getElementById('response').textContent = formatText(text);
+                                }
+                            }
+                        } catch (e) {}
+                    })();
+                    
                     const response = await fetch(PROCESS_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },

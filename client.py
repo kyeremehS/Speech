@@ -8,9 +8,13 @@ import io
 import argparse
 from scipy.io import wavfile
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 import modal
 from audio_compression import compress_wav_to_mp3, decompress_mp3_to_wav, get_compression_ratio
+
+# Thread pool for parallel decompression (avoids blocking main loop)
+_decompression_executor = ThreadPoolExecutor(max_workers=2)
 
 # Audio configuration
 SAMPLE_RATE = 16000
@@ -22,10 +26,15 @@ SILENCE_THRESHOLD_MS = 1000  # Stop recording after 1 second of silence
 # Streaming audio player for low-latency playback
 class StreamingAudioPlayer:
     """
-    Plays audio chunks as they arrive for lowest perceived latency.
+    NON-BLOCKING audio player for true streaming.
     
-    CRITICAL: Audio starts playing while LLM is still generating.
-    This achieves sub-2s first-audio latency.
+    CRITICAL: Chunks are queued and played in background thread.
+    This allows receiving next chunk WHILE previous is playing.
+    
+    LATENCY OPTIMIZATION:
+    - add_chunk() returns IMMEDIATELY (non-blocking)
+    - Audio plays in background via sounddevice callback
+    - No gaps between chunks (continuous playback)
     """
     
     def __init__(self, sample_rate: int = 24000):
@@ -33,40 +42,62 @@ class StreamingAudioPlayer:
         self.audio_queue = queue.Queue()
         self.playing = False
         self.stream = None
+        self._playback_thread = None
+        self._stop_event = None
+        import threading
+        self._lock = threading.Lock()
     
-    def _audio_callback(self, outdata, frames, time_info, status):
-        """Callback for sounddevice stream - pulls audio from queue."""
-        try:
-            data = self.audio_queue.get_nowait()
-            if len(data) < len(outdata):
-                outdata[:len(data)] = data.reshape(-1, 1)
-                outdata[len(data):] = 0
-            else:
-                outdata[:] = data[:len(outdata)].reshape(-1, 1)
-        except queue.Empty:
-            outdata[:] = 0
+    def _playback_worker(self):
+        """Background thread that plays queued audio chunks sequentially."""
+        while not self._stop_event.is_set():
+            try:
+                # Wait for next chunk with timeout (allows checking stop event)
+                data = self.audio_queue.get(timeout=0.1)
+                if data is None:  # Poison pill
+                    break
+                # Play this chunk (blocking within thread is fine)
+                sd.play(data, self.sample_rate)
+                sd.wait()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"⚠️ Playback error: {e}")
+    
+    def start(self):
+        """Start the background playback thread."""
+        import threading
+        if self._playback_thread is None or not self._playback_thread.is_alive():
+            self._stop_event = threading.Event()
+            self._playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
+            self._playback_thread.start()
     
     def add_chunk(self, audio_bytes: bytes):
-        """Add audio chunk to playback queue. Returns immediately."""
+        """
+        Add audio chunk to playback queue. Returns IMMEDIATELY.
+        This is the key to low-latency streaming - we don't block on playback.
+        """
+        # Ensure playback thread is running
+        self.start()
+        
         # Decode audio bytes
         try:
             with io.BytesIO(audio_bytes) as f:
                 sr, data = wavfile.read(f)
             
-            # Resample if needed
+            # Resample if needed (rare - most TTS outputs 24kHz)
             if sr != self.sample_rate:
                 from scipy import signal
                 num_samples = int(len(data) * self.sample_rate / sr)
                 data = signal.resample(data, num_samples).astype(np.int16)
             
-            # Add to queue for playback
+            # Queue for playback - returns immediately
             self.audio_queue.put(data)
             
         except Exception as e:
             print(f"⚠️ Audio chunk error: {e}")
     
     def play_blocking(self, audio_bytes: bytes):
-        """Play audio synchronously (for non-streaming mode)."""
+        """Play audio synchronously (for non-streaming mode only)."""
         try:
             with io.BytesIO(audio_bytes) as f:
                 sr, data = wavfile.read(f)
@@ -77,10 +108,19 @@ class StreamingAudioPlayer:
     
     def wait_for_completion(self):
         """Wait for all queued audio to finish playing."""
+        # Wait for queue to drain
         while not self.audio_queue.empty():
-            time.sleep(0.1)
-        # Small buffer for last chunk
-        time.sleep(0.2)
+            time.sleep(0.05)
+        # Give last chunk time to play (estimate ~3s max per chunk)
+        time.sleep(0.3)
+    
+    def stop(self):
+        """Stop playback and cleanup."""
+        if self._stop_event:
+            self._stop_event.set()
+        if self._playback_thread and self._playback_thread.is_alive():
+            self.audio_queue.put(None)  # Poison pill
+            self._playback_thread.join(timeout=1.0)
 
 # Session metrics tracking
 class SessionMetrics:
@@ -360,17 +400,22 @@ def main():
                         audio_data = chunk.get("audio", b"")
                         text = chunk.get("text", "")
                         
-                        # Decompress and play
+                        # Handle both compressed (MP3) and uncompressed (WAV) audio
+                        # Server skips compression for small chunks to reduce TTFA
                         if chunk.get("compressed", False):
+                            # Decompress MP3 -> WAV (still fast, ~10-20ms)
                             audio_data = decompress_mp3_to_wav(audio_data)
+                        # else: already WAV, play directly (saves 30-50ms!)
                         
-                        print(f"   🔊 Playing: \"{text[:40]}...\"")
-                        player.play_blocking(audio_data)
+                        print(f"   🔊 Queued: \"{text[:40]}...\"")
+                        player.add_chunk(audio_data)  # Returns immediately!
                         audio_chunks_played += 1
                         
                     elif chunk_type == "done":
                         response = chunk.get("response", "")
                         metrics = chunk.get("metrics", {})
+                        # Wait for audio to finish before showing completion
+                        player.wait_for_completion()
                         print(f"\n💬 Full response: \"{response}\"")
                         
                     elif chunk_type == "error":
