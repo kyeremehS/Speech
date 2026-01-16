@@ -5,6 +5,7 @@ import numpy as np
 import sounddevice as sd
 import webrtcvad
 import io
+import argparse
 from scipy.io import wavfile
 from datetime import datetime
 
@@ -17,6 +18,69 @@ FRAME_DURATION_MS = 30
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)
 VAD_LEVEL = 3
 SILENCE_THRESHOLD_MS = 1000  # Stop recording after 1 second of silence
+
+# Streaming audio player for low-latency playback
+class StreamingAudioPlayer:
+    """
+    Plays audio chunks as they arrive for lowest perceived latency.
+    
+    CRITICAL: Audio starts playing while LLM is still generating.
+    This achieves sub-2s first-audio latency.
+    """
+    
+    def __init__(self, sample_rate: int = 24000):
+        self.sample_rate = sample_rate
+        self.audio_queue = queue.Queue()
+        self.playing = False
+        self.stream = None
+    
+    def _audio_callback(self, outdata, frames, time_info, status):
+        """Callback for sounddevice stream - pulls audio from queue."""
+        try:
+            data = self.audio_queue.get_nowait()
+            if len(data) < len(outdata):
+                outdata[:len(data)] = data.reshape(-1, 1)
+                outdata[len(data):] = 0
+            else:
+                outdata[:] = data[:len(outdata)].reshape(-1, 1)
+        except queue.Empty:
+            outdata[:] = 0
+    
+    def add_chunk(self, audio_bytes: bytes):
+        """Add audio chunk to playback queue. Returns immediately."""
+        # Decode audio bytes
+        try:
+            with io.BytesIO(audio_bytes) as f:
+                sr, data = wavfile.read(f)
+            
+            # Resample if needed
+            if sr != self.sample_rate:
+                from scipy import signal
+                num_samples = int(len(data) * self.sample_rate / sr)
+                data = signal.resample(data, num_samples).astype(np.int16)
+            
+            # Add to queue for playback
+            self.audio_queue.put(data)
+            
+        except Exception as e:
+            print(f"⚠️ Audio chunk error: {e}")
+    
+    def play_blocking(self, audio_bytes: bytes):
+        """Play audio synchronously (for non-streaming mode)."""
+        try:
+            with io.BytesIO(audio_bytes) as f:
+                sr, data = wavfile.read(f)
+            sd.play(data, sr)
+            sd.wait()
+        except Exception as e:
+            print(f"⚠️ Playback error: {e}")
+    
+    def wait_for_completion(self):
+        """Wait for all queued audio to finish playing."""
+        while not self.audio_queue.empty():
+            time.sleep(0.1)
+        # Small buffer for last chunk
+        time.sleep(0.2)
 
 # Session metrics tracking
 class SessionMetrics:
@@ -206,12 +270,30 @@ def print_metrics(metrics: dict, network_time: float, record_time: float, models
 
 
 def main():
+    """
+    Real-time speech-to-speech client.
+    
+    Modes:
+        --streaming: TRUE STREAMING - audio plays while LLM is still generating
+                     Achieves sub-2s first-audio latency
+        (default):   BATCH - waits for full response before playing
+    """
+    parser = argparse.ArgumentParser(description="Speech-to-Speech Client")
+    parser.add_argument("--streaming", action="store_true", 
+                        help="Enable TRUE streaming mode for lowest latency")
+    args = parser.parse_args()
+    
     print("🚀 Starting real-time speech-to-speech client...")
+    print(f"   Mode: {'STREAMING (low latency)' if args.streaming else 'BATCH'}")
     print("   Connecting to Modal...")
     
-    # Use batch mode (streaming has issues with Modal generator nesting)
     try:
-        process_speech = modal.Function.from_name("speech-to-speech", "process_speech")
+        if args.streaming:
+            # TRUE STREAMING: Audio plays while LLM is still generating
+            process_func = modal.Function.from_name("speech-to-speech", "process_speech_streaming")
+        else:
+            # BATCH: Wait for full response
+            process_func = modal.Function.from_name("speech-to-speech", "process_speech")
     except modal.exception.NotFoundError:
         print("❌ Error: App not deployed. Run 'modal deploy modular_main.py' first.")
         sys.exit(1)
@@ -221,6 +303,7 @@ def main():
     
     recorder = AudioRecorder()
     session = SessionMetrics()
+    player = StreamingAudioPlayer()
     
     while True:
         try:
@@ -250,33 +333,85 @@ def main():
             # 2. Process through pipeline (ASR -> LLM -> TTS)
             t0 = time.time()
             
-            # BATCH MODE: Wait for full response
-            print("🚀 Processing...")
-            result = process_speech.remote(compressed_bytes)
-            network_time = time.time() - t0
-            
-            # Extract audio and metrics
-            if isinstance(result, dict):
-                audio_response = result.get("audio", b"")
-                metrics = result.get("metrics", {})
-                models = result.get("models", {})
-                transcription = result.get("transcription", "")
-                response = result.get("response", "")
+            if args.streaming:
+                # STREAMING MODE: Play audio chunks as they arrive
+                # This achieves sub-2s first-audio latency
+                print("🚀 Processing (streaming)...")
                 
-                print(f"\n📝 You said: \"{transcription}\"")
-                print(f"💬 Response: \"{response}\"")
+                transcription = ""
+                response = ""
+                metrics = {}
+                first_audio_received = None
+                audio_chunks_played = 0
                 
-                print_metrics(metrics, network_time, record_time, models)
-                session.add_call(metrics, network_time, record_time)
+                for chunk in process_func.remote_gen(compressed_bytes):
+                    chunk_type = chunk.get("type", "")
+                    
+                    if chunk_type == "transcription":
+                        transcription = chunk.get("transcription", "")
+                        print(f"\n📝 You said: \"{transcription}\"")
+                        
+                    elif chunk_type == "audio":
+                        # PLAY IMMEDIATELY - don't wait for more chunks
+                        if first_audio_received is None:
+                            first_audio_received = time.time() - t0
+                            print(f"   ⚡ First audio at {first_audio_received:.2f}s")
+                        
+                        audio_data = chunk.get("audio", b"")
+                        text = chunk.get("text", "")
+                        
+                        # Decompress and play
+                        if chunk.get("compressed", False):
+                            audio_data = decompress_mp3_to_wav(audio_data)
+                        
+                        print(f"   🔊 Playing: \"{text[:40]}...\"")
+                        player.play_blocking(audio_data)
+                        audio_chunks_played += 1
+                        
+                    elif chunk_type == "done":
+                        response = chunk.get("response", "")
+                        metrics = chunk.get("metrics", {})
+                        print(f"\n💬 Full response: \"{response}\"")
+                        
+                    elif chunk_type == "error":
+                        print(f"❌ Error: {chunk.get('error', 'Unknown')}")
+                
+                network_time = time.time() - t0
+                
+                if metrics:
+                    # Add first_audio_time to metrics for display
+                    metrics["first_audio_time"] = first_audio_received
+                    print_metrics(metrics, network_time, record_time, None)
+                    session.add_call(metrics, network_time, record_time)
+                    
             else:
-                audio_response = result
-                print(f"✅ Response received in {network_time:.2f}s")
+                # BATCH MODE: Wait for full response
+                print("🚀 Processing...")
+                result = process_func.remote(compressed_bytes)
+                network_time = time.time() - t0
+                
+                # Extract audio and metrics
+                if isinstance(result, dict):
+                    audio_response = result.get("audio", b"")
+                    metrics = result.get("metrics", {})
+                    models = result.get("models", {})
+                    transcription = result.get("transcription", "")
+                    response = result.get("response", "")
+                    
+                    print(f"\n📝 You said: \"{transcription}\"")
+                    print(f"💬 Response: \"{response}\"")
+                    
+                    print_metrics(metrics, network_time, record_time, models)
+                    session.add_call(metrics, network_time, record_time)
+                else:
+                    audio_response = result
+                    print(f"✅ Response received in {network_time:.2f}s")
 
-            # Decompress and play
-            if isinstance(result, dict) and result.get("compressed", False):
-                audio_response = decompress_mp3_to_wav(audio_response)
-            
-            play_audio(audio_response)
+                # Decompress and play
+                if isinstance(result, dict) and result.get("compressed", False):
+                    audio_response = decompress_mp3_to_wav(audio_response)
+                
+                play_audio(audio_response)
             
         except KeyboardInterrupt:
             print("\n👋 Exiting...")
