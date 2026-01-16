@@ -1799,44 +1799,85 @@ def process_web(data: dict) -> dict:
     }
 
 @app.function(image=image, timeout=600)
-@modal.fastapi_endpoint(method="POST")
-async def process_web_stream_text(req):
+@modal.asgi_app()
+def process_web_stream_text():
+    from fastapi import FastAPI, Request, Response
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse
-    import base64
-    try:
-        body = await req.body()
-        audio_base64 = body.decode("utf-8")
-    except Exception:
+    import base64, os
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    @app.options("/")
+    def _options():
+        return Response(status_code=204)
+    @app.post("/")
+    async def _post(request: Request):
+        content_type = request.headers.get("content-type", "")
         audio_base64 = ""
-    audio_bytes = base64.b64decode(audio_base64) if audio_base64 else b""
-    cfg = ModelConfig()
-    asr_model = data.get("asr_model")
-    llm_model = resolve_llm_model(data.get("llm_model"), cfg)
-    service = SpeechToSpeechService()
-    def gen():
-        asr = service.asr if not asr_model or asr_model == cfg.asr else service._get_or_load_model("asr", asr_model)
-        llm = service.llm if not llm_model or llm_model == cfg.llm else service._get_or_load_model("llm", llm_model)
-        transcription, _ = asr.transcribe(audio_bytes)
-        yield transcription + "\n\n"
-        for token in llm.generate_stream(transcription):
-            yield token
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-    }
-    return StreamingResponse(gen(), media_type="text/plain", headers=headers)
-
-@app.function(image=image, timeout=60, gpu=None)
-@modal.fastapi_endpoint(method="OPTIONS")
-def process_web_stream_text_options():
-    from fastapi import Response
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-    }
-    return Response(status_code=204, headers=headers)
+        data = {}
+        if content_type.startswith("application/json"):
+            try:
+                data = await request.json()
+                audio_base64 = data.get("audio_base64", "") if isinstance(data, dict) else ""
+            except Exception:
+                audio_base64 = ""
+        else:
+            try:
+                body = await request.body()
+                audio_base64 = body.decode("utf-8")
+            except Exception:
+                audio_base64 = ""
+        if not audio_base64:
+            return StreamingResponse(iter(["Error: No audio data received"]), media_type="text/plain")
+        try:
+            audio_bytes = base64.b64decode(audio_base64)
+        except Exception as e:
+            return StreamingResponse(iter([f"Error: Invalid base64 audio data - {e}"]), media_type="text/plain")
+        cfg = ModelConfig()
+        asr_model = request.headers.get("x-asr-model") or (data.get("asr_model") if isinstance(data, dict) else None)
+        llm_requested = request.headers.get("x-llm-model") or (data.get("llm_model") if isinstance(data, dict) else None)
+        groq_key = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("groq_api_key")
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        if llm_requested == "gpt4omini":
+            llm_model = "gpt4omini" if openai_key else ("llama31-groq" if groq_key else cfg.llm)
+        elif llm_requested == "llama31-groq":
+            llm_model = "llama31-groq" if groq_key else ("gpt4omini" if openai_key else cfg.llm)
+        else:
+            llm_model = llm_requested
+        service = SpeechToSpeechService()
+        def gen():
+            try:
+                asr = service.asr
+                if asr_model and asr_model != service.config.asr:
+                    if asr_model in service.loaded_asr:
+                        asr = service.loaded_asr[asr_model]
+                    elif asr_model in MODEL_REGISTRY["asr"]:
+                        asr_class = MODEL_REGISTRY["asr"][asr_model]
+                        asr = asr_class()
+                        asr.load()
+                        service.loaded_asr[asr_model] = asr
+                llm = service.llm
+                if llm_model and llm_model != service.config.llm:
+                    if llm_model in service.loaded_llm:
+                        llm = service.loaded_llm[llm_model]
+                    elif llm_model in MODEL_REGISTRY["llm"]:
+                        llm_class = MODEL_REGISTRY["llm"][llm_model]
+                        llm = llm_class()
+                        llm.load()
+                        service.loaded_llm[llm_model] = llm
+                transcription, _ = asr.transcribe(audio_bytes)
+                yield transcription + "\n\n"
+                for token in llm.generate_stream(transcription):
+                    yield token
+            except Exception as e:
+                yield f"\n\nError: {str(e)}"
+        return StreamingResponse(gen(), media_type="text/plain")
+    return app
 
 # Health check endpoint for keep-alive (prevents cold starts)
 @app.function(image=image)
