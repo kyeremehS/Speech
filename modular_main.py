@@ -1816,7 +1816,23 @@ def process_web_stream_text(data: dict):
         yield transcription + "\n\n"
         for token in llm.generate_stream(transcription):
             yield token
-    return StreamingResponse(gen(), media_type="text/plain")
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+    return StreamingResponse(gen(), media_type="text/plain", headers=headers)
+
+@app.function(image=image, timeout=60, gpu=None)
+@modal.fastapi_endpoint(method="OPTIONS")
+def process_web_stream_text_options():
+    from fastapi import Response
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+    return Response(status_code=204, headers=headers)
 
 # Health check endpoint for keep-alive (prevents cold starts)
 @app.function(image=image)
