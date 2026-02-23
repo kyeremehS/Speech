@@ -81,7 +81,7 @@ $env:ASR_MODEL="nemo"; $env:LLM_MODEL="phi3"; $env:TTS_MODEL="chatterbox"; modal
 Supported models:
 - **ASR**: `nemo`, `whisper`, `faster-whisper`
 - **LLM**: `phi3`, `llama`, `gpt4omini`, `llama31-groq`, `qwen3`
-- **TTS**: `chatterbox`, `parler`, `vibevoice`, `orpheus`
+- **TTS**: `chatterbox`, `parler`, `vibevoice`, `orpheus`,`inworld-tts-1.5-max`
 
 ### 5. Use Real-Time Client
 

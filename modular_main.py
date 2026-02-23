@@ -1127,6 +1127,85 @@ class OrpheusTTS(TTSModel):
         return "Orpheus TTS 3B"
 
 
+@register_model("tts", "inworld-tts-1.5-max")
+class InworldTTS(TTSModel):
+    def load(self):
+        import os
+        self.api_key = os.getenv("INWORLD_API_KEY")
+        if not self.api_key:
+            raise ValueError("INWORLD_API_KEY is required for Inworld TTS.")
+        self.voice_id = os.getenv("INWORLD_VOICE_ID", "Ashley")
+        self.model_id = "inworld-tts-1.5-max"
+        self.use_streaming = os.getenv("INWORLD_STREAMING", "true").lower() in ("1", "true", "yes", "on")
+        self.endpoint = "https://api.inworld.ai/tts/v1/voice:stream" if self.use_streaming else "https://api.inworld.ai/tts/v1/voice"
+
+    def synthesize(self, text: str) -> Tuple[bytes, float, float]:
+        import base64
+        import io
+        import time
+        import json
+        import requests
+        from pydub import AudioSegment
+
+        t0 = time.time()
+        text = text[:2000]
+
+        payload = {"text": text, "voiceId": self.voice_id, "modelId": self.model_id}
+        if self.use_streaming:
+            payload["audioConfig"] = {
+                "audioEncoding": "LINEAR16",
+                "sampleRateHertz": 24000,
+            }
+        headers = {
+            "Authorization": f"Basic {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.use_streaming:
+            response = requests.post(self.endpoint, json=payload, headers=headers, stream=True, timeout=60)
+            response.raise_for_status()
+            combined_audio = AudioSegment.silent(duration=0)
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                audio_content = data.get("result", {}).get("audioContent")
+                if not audio_content:
+                    continue
+                audio_bytes = base64.b64decode(audio_content)
+                chunk = AudioSegment.from_file(io.BytesIO(audio_bytes), format="wav")
+                combined_audio += chunk
+            if len(combined_audio) == 0:
+                raise ValueError("Inworld TTS streaming response had no audio content.")
+            combined_audio = combined_audio.set_channels(1)
+            buffer = io.BytesIO()
+            combined_audio.export(buffer, format="wav")
+            audio_duration = combined_audio.duration_seconds
+            return buffer.getvalue(), audio_duration, time.time() - t0
+
+        response = requests.post(self.endpoint, json=payload, headers=headers, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+        audio_content = result.get("audioContent") or result.get("result", {}).get("audioContent")
+        if not audio_content:
+            raise ValueError("Inworld TTS response missing audioContent.")
+
+        audio_bytes = base64.b64decode(audio_content)
+        audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        audio = audio.set_channels(1)
+        buffer = io.BytesIO()
+        audio.export(buffer, format="wav")
+        audio_duration = audio.duration_seconds
+
+        return buffer.getvalue(), audio_duration, time.time() - t0
+
+    @property
+    def model_name(self) -> str:
+        return "Inworld TTS 1.5 Max"
+
+
 # Modal App Setup
 app = modal.App("speech-to-speech")
 
@@ -1149,6 +1228,7 @@ image = (
     .pip_install("faster-whisper>=1.0.0")
     # Parler-TTS for expressive speech synthesis
     .pip_install("parler-tts>=0.2.0")
+    .pip_install("requests>=2.31.0")
     # VibeVoice for ultra-low latency TTS (~300ms first speech)
     # Using SDPA attention (built into PyTorch) instead of flash-attn to avoid CUDA compilation
     .pip_install("diffusers>=0.25.0", "soundfile")
@@ -1191,6 +1271,7 @@ _TTS_MODEL = os.getenv("TTS_MODEL", "parler")
         }),
         modal.Secret.from_name("hf-secret"),
         modal.Secret.from_name("api-keys"), 
+        modal.Secret.from_name("groq-secret"),
      ],
 )
 class SpeechToSpeechService:
@@ -1542,7 +1623,7 @@ class SpeechToSpeechService:
         Optionally specify models to use:
             asr_model: "nemo", "whisper", "faster-whisper"
             llm_model: "phi3", "llama", "gpt4omini", "llama31-groq", "qwen3"
-            tts_model: "chatterbox", "parler", "vibevoice", "orpheus"
+            tts_model: "chatterbox", "parler", "vibevoice", "orpheus", "inworld-tts-1.5-max"
         """
         import time
         from scipy.io import wavfile
