@@ -1131,6 +1131,7 @@ class OrpheusTTS(TTSModel):
 class InworldTTS(TTSModel):
     def load(self):
         import os
+        import requests
         self.api_key = os.getenv("INWORLD_API_KEY")
         if not self.api_key:
             raise ValueError("INWORLD_API_KEY is required for Inworld TTS.")
@@ -1138,13 +1139,13 @@ class InworldTTS(TTSModel):
         self.model_id = "inworld-tts-1.5-max"
         self.use_streaming = os.getenv("INWORLD_STREAMING", "true").lower() in ("1", "true", "yes", "on")
         self.endpoint = "https://api.inworld.ai/tts/v1/voice:stream" if self.use_streaming else "https://api.inworld.ai/tts/v1/voice"
+        self.session = requests.Session()
 
     def synthesize(self, text: str) -> Tuple[bytes, float, float]:
         import base64
         import io
         import time
         import json
-        import requests
         from pydub import AudioSegment
 
         t0 = time.time()
@@ -1159,9 +1160,10 @@ class InworldTTS(TTSModel):
         headers = {
             "Authorization": f"Basic {self.api_key}",
             "Content-Type": "application/json",
+            "Connection": "keep-alive",
         }
         if self.use_streaming:
-            response = requests.post(self.endpoint, json=payload, headers=headers, stream=True, timeout=60)
+            response = self.session.post(self.endpoint, json=payload, headers=headers, stream=True, timeout=60)
             response.raise_for_status()
             combined_audio = AudioSegment.silent(duration=0)
             for line in response.iter_lines(decode_unicode=True):
@@ -1185,7 +1187,7 @@ class InworldTTS(TTSModel):
             audio_duration = combined_audio.duration_seconds
             return buffer.getvalue(), audio_duration, time.time() - t0
 
-        response = requests.post(self.endpoint, json=payload, headers=headers, timeout=60)
+        response = self.session.post(self.endpoint, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
         result = response.json()
         audio_content = result.get("audioContent") or result.get("result", {}).get("audioContent")
@@ -1962,7 +1964,7 @@ def process_web_stream_text():
 
 # Health check endpoint for keep-alive (prevents cold starts)
 @app.function(image=image)
-@modal.web_endpoint(method="GET")
+@modal.fastapi_endpoint(method="GET")
 def health():
     """Health check endpoint - ping every 30s to keep container warm."""
     return {"status": "warm", "timestamp": time.time()}
