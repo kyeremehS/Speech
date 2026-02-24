@@ -9,6 +9,7 @@ import argparse
 from scipy.io import wavfile
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import modal
 from audio_compression import compress_wav_to_mp3, decompress_mp3_to_wav, get_compression_ratio
@@ -21,7 +22,8 @@ SAMPLE_RATE = 16000
 FRAME_DURATION_MS = 30
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)
 VAD_LEVEL = 3
-SILENCE_THRESHOLD_MS = 1000  # Stop recording after 1 second of silence
+SILENCE_THRESHOLD_MS = 800
+MAX_RECORD_SECS = 8
 
 # Streaming audio player for low-latency playback
 class StreamingAudioPlayer:
@@ -55,6 +57,9 @@ class StreamingAudioPlayer:
                 data = self.audio_queue.get(timeout=0.1)
                 if data is None:  # Poison pill
                     break
+                if isinstance(data, tuple) and data[0] == "sentinel":
+                    data[1].set()
+                    continue
                 # Play this chunk (blocking within thread is fine)
                 sd.play(data, self.sample_rate)
                 sd.wait()
@@ -108,11 +113,9 @@ class StreamingAudioPlayer:
     
     def wait_for_completion(self):
         """Wait for all queued audio to finish playing."""
-        # Wait for queue to drain
-        while not self.audio_queue.empty():
-            time.sleep(0.05)
-        # Give last chunk time to play (estimate ~3s max per chunk)
-        time.sleep(0.3)
+        done_event = threading.Event()
+        self.audio_queue.put(("sentinel", done_event))
+        done_event.wait(timeout=30.0)
     
     def stop(self):
         """Stop playback and cleanup."""
@@ -172,6 +175,7 @@ class AudioRecorder:
         self.recording = False
         self.silence_start = None
         self.speech_detected = False
+        self.trailing_silence_frames = 0
 
     def callback(self, indata, frames, time_info, status):
         if status:
@@ -184,10 +188,16 @@ class AudioRecorder:
         audio_buffer = []
         self.speech_detected = False
         self.silence_start = None
+        self.trailing_silence_frames = 0
+        recording_start_time = time.time()
+        max_record_seconds = MAX_RECORD_SECS
         
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='int16', callback=self.callback, blocksize=FRAME_SIZE):
             while True:
                 try:
+                    if time.time() - recording_start_time > max_record_seconds:
+                        print("⏱️ Max duration reached, stopping.")
+                        break
                     data = self.q.get()
                     is_speech = self.vad.is_speech(data.tobytes(), SAMPLE_RATE)
                     
@@ -196,6 +206,7 @@ class AudioRecorder:
                             print("🗣️ Speech detected...")
                             self.speech_detected = True
                         self.silence_start = None
+                        self.trailing_silence_frames = 0
                         audio_buffer.append(data)
                     else:
                         if self.speech_detected:
@@ -204,12 +215,16 @@ class AudioRecorder:
                             elif time.time() - self.silence_start > SILENCE_THRESHOLD_MS / 1000.0:
                                 print("🛑 Silence detected, stopping recording.")
                                 break
-                            audio_buffer.append(data)
+                            if self.trailing_silence_frames < 7:
+                                audio_buffer.append(data)
+                                self.trailing_silence_frames += 1
                         else:
-                            # Keep a small rolling buffer of pre-speech audio (300ms)
                             audio_buffer.append(data)
                             if len(audio_buffer) > 10:
                                 audio_buffer.pop(0)
+                    if len(audio_buffer) * FRAME_DURATION_MS / 1000 > MAX_RECORD_SECS:
+                        print(f"⏱️ Max recording time reached ({MAX_RECORD_SECS}s), stopping.")
+                        break
                                 
                 except KeyboardInterrupt:
                     return None
@@ -261,6 +276,16 @@ def play_audio(audio_bytes):
     print(f"🔊 Playing response ({len(data)/samplerate:.1f}s)...")
     sd.play(data, samplerate)
     sd.wait()
+
+def has_speech(wav_bytes: bytes, min_rms: float = 200.0, min_secs: float = 0.4) -> bool:
+    try:
+        sr, data = wavfile.read(io.BytesIO(wav_bytes))
+    except Exception:
+        return True
+    if len(data) / sr < min_secs:
+        return False
+    rms = np.sqrt(np.mean(data.astype(np.float32) ** 2))
+    return rms >= min_rms
 
 def print_metrics(metrics: dict, network_time: float, record_time: float, models: dict = None):
     """Print detailed latency breakdown."""
@@ -349,19 +374,22 @@ def main():
         try:
             # 1. Record
             t_record_start = time.time()
-            audio_data = recorder.record_until_silence()
+            mic_audio = recorder.record_until_silence()
             record_time = time.time() - t_record_start
             
-            if audio_data is None:
+            if mic_audio is None:
                 break
             
-            if len(audio_data) == 0:
+            if len(mic_audio) == 0:
                 continue
 
             # Create WAV container for the raw PCM data
             wav_buffer = io.BytesIO()
-            wavfile.write(wav_buffer, SAMPLE_RATE, audio_data)
+            wavfile.write(wav_buffer, SAMPLE_RATE, mic_audio)
             wav_bytes = wav_buffer.getvalue()
+            if not has_speech(wav_bytes):
+                print("🔇 No speech detected — skipping")
+                continue
             
             # Compress audio to reduce network overhead
             print(f"📦 Original WAV: {len(wav_bytes)} bytes")
@@ -397,18 +425,18 @@ def main():
                             first_audio_received = time.time() - t0
                             print(f"   ⚡ First audio at {first_audio_received:.2f}s")
                         
-                        audio_data = chunk.get("audio", b"")
+                        chunk_audio = chunk.get("audio", b"")
                         text = chunk.get("text", "")
                         
                         # Handle both compressed (MP3) and uncompressed (WAV) audio
                         # Server skips compression for small chunks to reduce TTFA
                         if chunk.get("compressed", False):
                             # Decompress MP3 -> WAV (still fast, ~10-20ms)
-                            audio_data = decompress_mp3_to_wav(audio_data)
+                            chunk_audio = decompress_mp3_to_wav(chunk_audio)
                         # else: already WAV, play directly (saves 30-50ms!)
                         
                         print(f"   🔊 Queued: \"{text[:40]}...\"")
-                        player.add_chunk(audio_data)  # Returns immediately!
+                        player.add_chunk(chunk_audio)  # Returns immediately!
                         audio_chunks_played += 1
                         
                     elif chunk_type == "done":
