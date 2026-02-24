@@ -1334,6 +1334,124 @@ _ASR_MODEL = os.getenv("ASR_MODEL", "nemo")
 _LLM_MODEL = os.getenv("LLM_MODEL", "phi3")
 _TTS_MODEL = os.getenv("TTS_MODEL", "parler")
 
+def split_sentences(text: str) -> list:
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    merged = []
+    buffer = ""
+    for s in sentences:
+        if len(buffer) + len(s) < 50:
+            buffer = (buffer + " " + s).strip() if buffer else s
+        else:
+            if buffer:
+                merged.append(buffer)
+            buffer = s
+    if buffer:
+        merged.append(buffer)
+    return merged if merged else [text]
+
+def get_model_class(model_type: str, model_name: str):
+    return MODEL_REGISTRY[model_type].get(model_name)
+
+def require_model_class(model_type: str, model_name: str):
+    model_class = get_model_class(model_type, model_name)
+    if not model_class:
+        raise ValueError(
+            f"{model_type.upper()} '{model_name}' not found. Available: {list(MODEL_REGISTRY[model_type].keys())}"
+        )
+    return model_class
+
+def load_model(model_class):
+    model = model_class()
+    model.load()
+    return model
+
+def get_or_load_model(model_type: str, model_name: str, cache: dict):
+    if model_name in cache:
+        return cache[model_name]
+    model_class = get_model_class(model_type, model_name)
+    if not model_class:
+        return None
+    model = load_model(model_class)
+    cache[model_name] = model
+    return model
+
+def normalize_audio_bytes(audio_bytes: bytes, log_decompress: bool = False):
+    if not audio_bytes:
+        return None, False, 0
+    original_size = len(audio_bytes)
+    if audio_bytes.startswith(b'RIFF'):
+        return audio_bytes, False, original_size
+    try:
+        if log_decompress:
+            print(f"📦 Decompressing input: {original_size} bytes")
+        audio_bytes = decompress_mp3_to_wav(audio_bytes)
+        if log_decompress:
+            print(f"📦 Converted: {len(audio_bytes)} bytes")
+        return audio_bytes, True, original_size
+    except Exception as e:
+        if log_decompress:
+            print(f"⚠️  Decompression failed, assuming WAV: {e}")
+        return audio_bytes, False, original_size
+
+def get_wav_duration(audio_bytes: bytes) -> float:
+    from scipy.io import wavfile
+    import io
+    try:
+        with io.BytesIO(audio_bytes) as f:
+            sr, data = wavfile.read(f)
+            return len(data) / sr
+    except Exception:
+        return 0.0
+
+def compress_if_large(audio_bytes: bytes, threshold: int = 50_000):
+    if len(audio_bytes) < threshold:
+        return audio_bytes, False
+    return compress_wav_to_mp3(audio_bytes), True
+
+def stream_tts_sentence(tts, sentence: str, using_tts_stream: bool, state: dict):
+    import time
+    t_tts = time.time()
+    if state["first_audio_time"] is None:
+        state["first_audio_time"] = t_tts - state["t_start"]
+        print(f"   ⚡ FIRST AUDIO at {state['first_audio_time']:.2f}s")
+
+    if using_tts_stream:
+        sub_index = 0
+        chunk_start = time.time()
+        for wav_chunk, sample_rate, is_last in tts.synthesize_stream(sentence):
+            chunk_duration = (len(wav_chunk) - 44) / (sample_rate * 2)
+            state["total_duration"] += chunk_duration
+            wav_chunk, compressed = compress_if_large(wav_chunk)
+            yield {
+                "type": "audio",
+                "audio": wav_chunk,
+                "text": sentence if sub_index == 0 else "",
+                "chunk_index": state["chunk_index"],
+                "sub_index": sub_index,
+                "chunk_duration": chunk_duration,
+                "compressed": compressed,
+                "is_last_sub": is_last,
+            }
+            sub_index += 1
+        state["total_tts_time"] += time.time() - chunk_start
+    else:
+        audio_chunk, chunk_duration, chunk_time = tts.synthesize(sentence)
+        state["total_tts_time"] += chunk_time
+        state["total_duration"] += chunk_duration
+        audio_chunk, compressed = compress_if_large(audio_chunk)
+        yield {
+            "type": "audio",
+            "audio": audio_chunk,
+            "text": sentence,
+            "chunk_index": state["chunk_index"],
+            "chunk_duration": chunk_duration,
+            "compressed": compressed,
+        }
+
+    print(f"   ✓ Chunk {state['chunk_index']}: \"{sentence[:40]}...\"")
+    state["chunk_index"] += 1
+
 @app.cls(
     image=image,
     gpu="A10G",
@@ -1378,30 +1496,19 @@ class SpeechToSpeechService:
         print("=" * 70)
 
         # Validate and load models
-        asr_class = MODEL_REGISTRY["asr"].get(self.config.asr)
-        llm_class = MODEL_REGISTRY["llm"].get(self.config.llm)
-        tts_class = MODEL_REGISTRY["tts"].get(self.config.tts)
+        asr_class = require_model_class("asr", self.config.asr)
+        llm_class = require_model_class("llm", self.config.llm)
+        tts_class = require_model_class("tts", self.config.tts)
 
-        if not asr_class:
-            raise ValueError(f"ASR '{self.config.asr}' not found. Available: {list(MODEL_REGISTRY['asr'].keys())}")
-        if not llm_class:
-            raise ValueError(f"LLM '{self.config.llm}' not found. Available: {list(MODEL_REGISTRY['llm'].keys())}")
-        if not tts_class:
-            raise ValueError(f"TTS '{self.config.tts}' not found. Available: {list(MODEL_REGISTRY['tts'].keys())}")
-
-        # Load models
-        self.asr = asr_class()
-        self.asr.load()
+        self.asr = load_model(asr_class)
         self.loaded_asr[self.config.asr] = self.asr
         print(f"✅ ASR: {self.asr.model_name}")
 
-        self.llm = llm_class()
-        self.llm.load()
+        self.llm = load_model(llm_class)
         self.loaded_llm[self.config.llm] = self.llm
         print(f"✅ LLM: {self.llm.model_name}")
 
-        self.tts = tts_class()
-        self.tts.load()
+        self.tts = load_model(tts_class)
         self.loaded_tts[self.config.tts] = self.tts
         print(f"✅ TTS: {self.tts.model_name}")
 
@@ -1419,25 +1526,6 @@ class SpeechToSpeechService:
             _ = self.tts.synthesize("Hello")
         except Exception as _:
             pass
-
-    def _split_sentences(self, text: str) -> list:
-        """Split text into sentences for streaming TTS."""
-        import re
-        # Split on sentence boundaries but keep short fragments together
-        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-        # Merge very short sentences to avoid tiny audio chunks
-        merged = []
-        buffer = ""
-        for s in sentences:
-            if len(buffer) + len(s) < 50:  # Merge if combined < 50 chars
-                buffer = (buffer + " " + s).strip() if buffer else s
-            else:
-                if buffer:
-                    merged.append(buffer)
-                buffer = s
-        if buffer:
-            merged.append(buffer)
-        return merged if merged else [text]
 
     @modal.method()
     def process_streaming(self, audio_bytes: bytes, system_prompt: Optional[str] = None):
@@ -1457,15 +1545,10 @@ class SpeechToSpeechService:
 
         t_start = time.time()
 
+        audio_bytes, _, _ = normalize_audio_bytes(audio_bytes)
         if not audio_bytes:
             yield {"type": "error", "error": "Empty input audio"}
             return
-
-        if not audio_bytes.startswith(b'RIFF'):
-            try:
-                audio_bytes = decompress_mp3_to_wav(audio_bytes)
-            except Exception:
-                pass
 
         print(f"🎤 [{self.asr.model_name}] Transcribing...")
         transcription, asr_time = self.asr.transcribe(audio_bytes)
@@ -1491,74 +1574,26 @@ class SpeechToSpeechService:
         print(f"🔊 [{self.tts.model_name}] {'True-stream' if using_tts_stream else 'Batch'} TTS")
 
         llm_start = time.time()
-        first_audio_time = None
-        total_tts_time = 0
-        total_duration = 0
-        chunk_index = 0
+        state = {
+            "t_start": t_start,
+            "first_audio_time": None,
+            "total_tts_time": 0,
+            "total_duration": 0,
+            "chunk_index": 0,
+        }
         full_response = []
-
-        def _synthesise_and_yield(sentence: str):
-            nonlocal first_audio_time, total_tts_time, total_duration, chunk_index
-
-            t_tts = time.time()
-            if first_audio_time is None:
-                first_audio_time = t_tts - t_start
-                print(f"   ⚡ FIRST AUDIO at {first_audio_time:.2f}s")
-
-            if using_tts_stream:
-                sub_index = 0
-                chunk_start = time.time()
-                for wav_chunk, sample_rate, is_last in self.tts.synthesize_stream(sentence):
-                    chunk_duration = (len(wav_chunk) - 44) / (sample_rate * 2)
-                    total_duration += chunk_duration
-                    compressed = False
-                    if len(wav_chunk) >= 50_000:
-                        wav_chunk = compress_wav_to_mp3(wav_chunk)
-                        compressed = True
-                    yield {
-                        "type": "audio",
-                        "audio": wav_chunk,
-                        "text": sentence if sub_index == 0 else "",
-                        "chunk_index": chunk_index,
-                        "sub_index": sub_index,
-                        "chunk_duration": chunk_duration,
-                        "compressed": compressed,
-                        "is_last_sub": is_last,
-                    }
-                    sub_index += 1
-                chunk_time = time.time() - chunk_start
-                total_tts_time += chunk_time
-            else:
-                audio_chunk, chunk_duration, chunk_time = self.tts.synthesize(sentence)
-                total_tts_time += chunk_time
-                total_duration += chunk_duration
-                compressed = False
-                if len(audio_chunk) >= 50_000:
-                    audio_chunk = compress_wav_to_mp3(audio_chunk)
-                    compressed = True
-                yield {
-                    "type": "audio",
-                    "audio": audio_chunk,
-                    "text": sentence,
-                    "chunk_index": chunk_index,
-                    "chunk_duration": chunk_duration,
-                    "compressed": compressed,
-                }
-
-            print(f"   ✓ Chunk {chunk_index}: \"{sentence[:40]}...\"")
-            chunk_index += 1
 
         for token in self.llm.generate_stream(transcription, system_prompt):
             full_response.append(token)
             complete_sentence = chunker.add_token(token)
             if complete_sentence:
-                yield from _synthesise_and_yield(complete_sentence)
+                yield from stream_tts_sentence(self.tts, complete_sentence, using_tts_stream, state)
 
         llm_time = time.time() - llm_start
 
         remaining = chunker.flush()
         if remaining:
-            yield from _synthesise_and_yield(remaining)
+            yield from stream_tts_sentence(self.tts, remaining, using_tts_stream, state)
 
         total_time = time.time() - t_start
         response_text = "".join(full_response).strip()
@@ -1568,11 +1603,11 @@ class SpeechToSpeechService:
         print(f"{'='*70}")
         print(f"  ASR time:        {asr_time:.2f}s")
         print(f"  LLM stream time: {llm_time:.2f}s")
-        print(f"  TTS total time:  {total_tts_time:.2f}s")
-        print(f"  First audio at:  {first_audio_time:.2f}s "
-              f"{'✅' if first_audio_time and first_audio_time < 1.5 else '⚠️  >1.5s!'}")
-        print(f"  Chunks sent:     {chunk_index}")
-        print(f"  Total audio:     {total_duration:.1f}s")
+        print(f"  TTS total time:  {state['total_tts_time']:.2f}s")
+        print(f"  First audio at:  {state['first_audio_time']:.2f}s "
+              f"{'✅' if state['first_audio_time'] and state['first_audio_time'] < 1.5 else '⚠️  >1.5s!'}")
+        print(f"  Chunks sent:     {state['chunk_index']}")
+        print(f"  Total audio:     {state['total_duration']:.1f}s")
         print(f"  End-to-end:      {total_time:.2f}s")
         print(f"{'='*70}\n")
 
@@ -1582,11 +1617,11 @@ class SpeechToSpeechService:
             "metrics": {
                 "asr_time": asr_time,
                 "llm_time": llm_time,
-                "tts_time": total_tts_time,
+                "tts_time": state["total_tts_time"],
                 "total_time": total_time,
-                "first_audio_time": first_audio_time,
-                "output_duration": total_duration,
-                "chunks": chunk_index,
+                "first_audio_time": state["first_audio_time"],
+                "output_duration": state["total_duration"],
+                "chunks": state["chunk_index"],
             }
         }
 
@@ -1599,21 +1634,12 @@ class SpeechToSpeechService:
         Kept for backward compatibility.
         """
         import time
-        from scipy.io import wavfile
-        import io
-
         t_start = time.time()
 
-        # Handle compressed input
+        audio_bytes, _, _ = normalize_audio_bytes(audio_bytes)
         if not audio_bytes:
             print("❌ Input audio bytes are empty")
             return {"error": "Empty input audio"}
-
-        if not audio_bytes.startswith(b'RIFF'):
-            try:
-                audio_bytes = decompress_mp3_to_wav(audio_bytes)
-            except Exception:
-                pass
 
         # Step 1: ASR
         print(f"🎤 [{self.asr.model_name}] Transcribing...")
@@ -1635,7 +1661,7 @@ class SpeechToSpeechService:
         }
 
         # Step 3: Streaming TTS - sentence by sentence
-        sentences = self._split_sentences(response)
+        sentences = split_sentences(response)
         print(f"🔊 [{self.tts.model_name}] Streaming {len(sentences)} chunks...")
 
         total_tts_time = 0
@@ -1691,65 +1717,19 @@ class SpeechToSpeechService:
             tts_model: "chatterbox", "parler", "vibevoice", "orpheus", "inworld-tts-1.5-max"
         """
         import time
-        from scipy.io import wavfile
-        import io
-
         t_start = time.time()
         
-        # Use specified models or defaults
-        asr = self.asr
-        llm = self.llm
-        tts = self.tts
-        
-        # Load different model if requested
-        if asr_model and asr_model != self.config.asr:
-            if asr_model in self.loaded_asr:
-                asr = self.loaded_asr[asr_model]
-            elif asr_model in MODEL_REGISTRY["asr"]:
-                asr = MODEL_REGISTRY["asr"][asr_model]()
-                asr.load()
-                self.loaded_asr[asr_model] = asr
-        
-        if llm_model and llm_model != self.config.llm:
-            if llm_model in self.loaded_llm:
-                llm = self.loaded_llm[llm_model]
-            elif llm_model in MODEL_REGISTRY["llm"]:
-                llm = MODEL_REGISTRY["llm"][llm_model]()
-                llm.load()
-                self.loaded_llm[llm_model] = llm
-        
-        if tts_model and tts_model != self.config.tts:
-            if tts_model in self.loaded_tts:
-                tts = self.loaded_tts[tts_model]
-            elif tts_model in MODEL_REGISTRY["tts"]:
-                tts = MODEL_REGISTRY["tts"][tts_model]()
-                tts.load()
-                self.loaded_tts[tts_model] = tts
+        asr = get_or_load_model("asr", asr_model or self.config.asr, self.loaded_asr) or self.asr
+        llm = get_or_load_model("llm", llm_model or self.config.llm, self.loaded_llm) or self.llm
+        tts = get_or_load_model("tts", tts_model or self.config.tts, self.loaded_tts) or self.tts
 
-        # Handle compressed input
-        input_compressed = False
+        audio_bytes, _, _ = normalize_audio_bytes(audio_bytes, log_decompress=True)
         if not audio_bytes:
             print("❌ Input audio bytes are empty")
             return {"error": "Empty input audio"}
 
-        original_size = len(audio_bytes)
-
-        if not audio_bytes.startswith(b'RIFF'):
-            try:
-                print(f"📦 Decompressing input: {original_size} bytes")
-                audio_bytes = decompress_mp3_to_wav(audio_bytes)
-                print(f"📦 Converted: {len(audio_bytes)} bytes")
-                input_compressed = True
-            except Exception as e:
-                print(f"⚠️  Decompression failed, assuming WAV: {e}")
-
         # Get input duration
-        try:
-            with io.BytesIO(audio_bytes) as f:
-                sr, data = wavfile.read(f)
-                input_duration = len(data) / sr
-        except:
-            input_duration = 0.0
+        input_duration = get_wav_duration(audio_bytes)
 
         # Step 1: ASR
         print(f"🎤 [{asr.model_name}] Transcribing...")
