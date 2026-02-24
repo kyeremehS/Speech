@@ -278,6 +278,23 @@ class TTSModel(ABC):
         """Returns (audio_bytes, audio_duration, processing_time)"""
         pass
 
+    def synthesize_stream(self, text: str):
+        """
+        Optional: yield raw audio bytes incrementally.
+        
+        Override this for sub-250ms TTFA (e.g. Inworld streaming API).
+        Each yielded item: (pcm_chunk: bytes, sample_rate: int, is_last: bool)
+        
+        Default: falls back to synthesize() — one big chunk.
+        """
+        audio_bytes, duration, proc_time = self.synthesize(text)
+        yield (audio_bytes, 24000, True)
+
+    @property
+    def supports_streaming(self) -> bool:
+        """Return True if this model implements true streaming synthesis."""
+        return False
+
     @property
     @abstractmethod
     def model_name(self) -> str:
@@ -1127,85 +1144,144 @@ class OrpheusTTS(TTSModel):
         return "Orpheus TTS 3B"
 
 
-@register_model("tts", "inworld-tts-1.5-max")
-class InworldTTS(TTSModel):
+class _InworldTTSBase(TTSModel):
+    """
+    Inworld TTS-1.5 Base — shared implementation for Max and Mini.
+
+    Key latency path:
+      - Use streaming endpoint (/voice:stream) → first PCM chunk in <250ms (Max) or <130ms (Mini)
+      - Each SSE line is base64-encoded LINEAR16 PCM at 24 kHz
+      - Yield chunks immediately; don't accumulate before sending to client
+    """
+
+    _model_id: str = "inworld-tts-1.5-max"
+    _chunker_min_chars: int = 8
+    _chunker_max_chars: int = 80
+
     def load(self):
         import os
         import requests
+        print(f"🔊 Initialising Inworld TTS ({self._model_id})...")
         self.api_key = os.getenv("INWORLD_API_KEY")
         if not self.api_key:
-            raise ValueError("INWORLD_API_KEY is required for Inworld TTS.")
+            raise ValueError("INWORLD_API_KEY is required. Add it to your Modal secret.")
         self.voice_id = os.getenv("INWORLD_VOICE_ID", "Ashley")
-        self.model_id = "inworld-tts-1.5-max"
-        self.use_streaming = os.getenv("INWORLD_STREAMING", "true").lower() in ("1", "true", "yes", "on")
-        self.endpoint = "https://api.inworld.ai/tts/v1/voice:stream" if self.use_streaming else "https://api.inworld.ai/tts/v1/voice"
+        self.sample_rate = 24000
+        self.stream_endpoint = "https://api.inworld.ai/tts/v1/voice:stream"
         self.session = requests.Session()
-
-    def synthesize(self, text: str) -> Tuple[bytes, float, float]:
-        import base64
-        import io
-        import time
-        import json
-        from pydub import AudioSegment
-
-        t0 = time.time()
-        text = text[:2000]
-
-        payload = {"text": text, "voiceId": self.voice_id, "modelId": self.model_id}
-        if self.use_streaming:
-            payload["audioConfig"] = {
-                "audioEncoding": "LINEAR16",
-                "sampleRateHertz": 24000,
-            }
-        headers = {
+        self.session.headers.update({
             "Authorization": f"Basic {self.api_key}",
             "Content-Type": "application/json",
             "Connection": "keep-alive",
+        })
+        print(f"✅ Inworld {self._model_id} ready  (voice={self.voice_id})")
+
+    def _stream_raw_pcm(self, text: str):
+        import base64
+        import json
+
+        payload = {
+            "text": text[:2000],
+            "voiceId": self.voice_id,
+            "modelId": self._model_id,
+            "audioConfig": {
+                "audioEncoding": "LINEAR16",
+                "sampleRateHertz": self.sample_rate,
+            },
         }
-        if self.use_streaming:
-            response = self.session.post(self.endpoint, json=payload, headers=headers, stream=True, timeout=60)
-            response.raise_for_status()
-            combined_audio = AudioSegment.silent(duration=0)
-            for line in response.iter_lines(decode_unicode=True):
+
+        prev_chunk = None
+        with self.session.post(
+            self.stream_endpoint, json=payload, stream=True, timeout=30
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines(decode_unicode=True):
                 if not line:
                     continue
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                audio_content = data.get("result", {}).get("audioContent")
-                if not audio_content:
+                audio_b64 = (
+                    data.get("result", {}).get("audioContent")
+                    or data.get("audioContent")
+                )
+                if not audio_b64:
                     continue
-                audio_bytes = base64.b64decode(audio_content)
-                chunk = AudioSegment.from_file(io.BytesIO(audio_bytes), format="wav")
-                combined_audio += chunk
-            if len(combined_audio) == 0:
-                raise ValueError("Inworld TTS streaming response had no audio content.")
-            combined_audio = combined_audio.set_channels(1)
-            buffer = io.BytesIO()
-            combined_audio.export(buffer, format="wav")
-            audio_duration = combined_audio.duration_seconds
-            return buffer.getvalue(), audio_duration, time.time() - t0
+                pcm = base64.b64decode(audio_b64)
+                if prev_chunk is not None:
+                    yield prev_chunk, False
+                prev_chunk = pcm
+        if prev_chunk is not None:
+            yield prev_chunk, True
 
-        response = self.session.post(self.endpoint, json=payload, headers=headers, timeout=60)
-        response.raise_for_status()
-        result = response.json()
-        audio_content = result.get("audioContent") or result.get("result", {}).get("audioContent")
-        if not audio_content:
-            raise ValueError("Inworld TTS response missing audioContent.")
+    @staticmethod
+    def _pcm_to_wav(pcm: bytes, sample_rate: int = 24000) -> bytes:
+        import io
+        import wave
 
-        audio_bytes = base64.b64decode(audio_content)
-        audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-        audio = audio.set_channels(1)
-        buffer = io.BytesIO()
-        audio.export(buffer, format="wav")
-        audio_duration = audio.duration_seconds
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm)
+        return buf.getvalue()
 
-        return buffer.getvalue(), audio_duration, time.time() - t0
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    def synthesize_stream(self, text: str):
+        for pcm_chunk, is_last in self._stream_raw_pcm(text):
+            wav_chunk = self._pcm_to_wav(pcm_chunk, self.sample_rate)
+            yield (wav_chunk, self.sample_rate, is_last)
+
+    def synthesize(self, text: str) -> Tuple[bytes, float, float]:
+        import time
+
+        t0 = time.time()
+        all_pcm = b""
+        for pcm_chunk, _ in self._stream_raw_pcm(text):
+            all_pcm += pcm_chunk
+        wav = self._pcm_to_wav(all_pcm, self.sample_rate)
+        duration = len(all_pcm) / (self.sample_rate * 2)
+        return wav, duration, time.time() - t0
+
+
+@register_model("tts", "inworld-tts-1.5-max")
+class InworldMaxTTS(_InworldTTSBase):
+    """
+    Inworld TTS-1.5 Max
+    - P90 TTFA: <250 ms
+    - 30 % more expressive than prior generation
+    - 40 % lower word-error-rate
+    - Recommended for most voice applications
+    """
+    _model_id = "inworld-tts-1.5-max"
+    _chunker_min_chars = 8
+    _chunker_max_chars = 90
 
     @property
     def model_name(self) -> str:
-        return "Inworld TTS 1.5 Max"
+        return "Inworld TTS-1.5 Max"
+
+
+@register_model("tts", "inworld-tts-1.5-mini")
+class InworldMiniTTS(_InworldTTSBase):
+    """
+    Inworld TTS-1.5 Mini
+    - P90 TTFA: <130 ms  (4× faster than prior gen)
+    - Optimised for hyper-latency-sensitive applications
+    - Trade a little expressiveness for blazing speed
+    """
+    _model_id = "inworld-tts-1.5-mini"
+    _chunker_min_chars = 5
+    _chunker_max_chars = 60
+
+    @property
+    def model_name(self) -> str:
+        return "Inworld TTS-1.5 Mini"
 
 
 # Modal App Setup
@@ -1368,23 +1444,20 @@ class SpeechToSpeechService:
         """
         TRUE STREAMING speech-to-speech pipeline.
         
-        CRITICAL INVARIANTS:
-        - LLM tokens stream into sentence chunker
-        - TTS starts as soon as FIRST sentence is complete
-        - Audio begins playing while LLM is STILL generating
-        - First audio < 2 seconds from ASR completion
+        When TTS supports streaming (Inworld), audio chunks begin
+        flowing to the client BEFORE a full sentence has even been
+        synthesised — shaving another 100-200 ms off perceived latency.
         
-        This achieves 60%+ latency reduction vs batch mode.
+        Yield contract (unchanged):
+          {"type": "transcription", ...}
+          {"type": "audio", "audio": <bytes>, "compressed": False, ...}  (N times)
+          {"type": "done", "metrics": {...}}
         """
         import time
-        from scipy.io import wavfile
-        import io
 
         t_start = time.time()
 
-        # Handle compressed input
         if not audio_bytes:
-            print("❌ Input audio bytes are empty")
             yield {"type": "error", "error": "Empty input audio"}
             return
 
@@ -1394,125 +1467,115 @@ class SpeechToSpeechService:
             except Exception:
                 pass
 
-        # Step 1: ASR (must complete before LLM)
         print(f"🎤 [{self.asr.model_name}] Transcribing...")
         transcription, asr_time = self.asr.transcribe(audio_bytes)
         print(f"   ✓ {asr_time:.2f}s: {transcription}")
-        
+
         if not transcription.strip():
             yield {"type": "error", "error": "Empty transcription"}
             return
 
-        # Yield transcription immediately so client knows what was heard
         yield {
             "type": "transcription",
             "transcription": transcription,
             "asr_time": asr_time,
         }
 
-        # Step 2 + 3: STREAMING LLM → Sentence Chunker → TTS
-        # This is the CRITICAL streaming path
         print(f"🤖 [{self.llm.model_name}] Streaming generation...")
-        print(f"🔊 [{self.tts.model_name}] Ready for streaming TTS...")
-        
-        # LATENCY OPTIMIZED: min_chars=10 for sub-1s TTFA, max_chars=100 for tight chunks
-        chunker = StreamingSentenceChunker(min_chars=10, max_chars=100)
-        
+
+        min_chars = getattr(self.tts, "_chunker_min_chars", 10)
+        max_chars = getattr(self.tts, "_chunker_max_chars", 100)
+        chunker = StreamingSentenceChunker(min_chars=min_chars, max_chars=max_chars)
+
+        using_tts_stream = self.tts.supports_streaming
+        print(f"🔊 [{self.tts.model_name}] {'True-stream' if using_tts_stream else 'Batch'} TTS")
+
         llm_start = time.time()
         first_audio_time = None
         total_tts_time = 0
         total_duration = 0
         chunk_index = 0
         full_response = []
-        
-        # Stream LLM tokens → chunk into sentences → synthesize immediately
-        for token in self.llm.generate_stream(transcription, system_prompt):
-            full_response.append(token)
-            
-            # Feed token to sentence chunker
-            complete_sentence = chunker.add_token(token)
-            
-            if complete_sentence:
-                # IMMEDIATELY synthesize this sentence - don't wait for more LLM tokens
-                t_tts = time.time()
-                
-                if first_audio_time is None:
-                    first_audio_time = t_tts - t_start
-                    print(f"   ⚡ FIRST AUDIO at {first_audio_time:.2f}s (target: <1s)")
-                
-                audio_chunk, chunk_duration, chunk_time = self.tts.synthesize(complete_sentence)
-                
-                # LATENCY OPTIMIZATION: Skip compression for small chunks (<50KB)
-                # Saves 30-50ms per chunk - critical for TTFA
-                is_compressed = False
-                if len(audio_chunk) >= 50000:  # Only compress if >= 50KB
-                    audio_chunk = compress_wav_to_mp3(audio_chunk)
-                    is_compressed = True
-                
-                total_tts_time += chunk_time
-                total_duration += chunk_duration
-                
-                print(f"   ✓ Chunk {chunk_index}: \"{complete_sentence[:40]}...\" → {chunk_duration:.1f}s audio {'(mp3)' if is_compressed else '(wav)'}")
-                
-                yield {
-                    "type": "audio",
-                    "audio": audio_chunk,
-                    "text": complete_sentence,
-                    "chunk_index": chunk_index,
-                    "chunk_duration": chunk_duration,
-                    "compressed": is_compressed,
-                }
-                chunk_index += 1
-        
-        llm_time = time.time() - llm_start
-        
-        # Flush any remaining text in the chunker
-        remaining = chunker.flush()
-        if remaining:
+
+        def _synthesise_and_yield(sentence: str):
+            nonlocal first_audio_time, total_tts_time, total_duration, chunk_index
+
             t_tts = time.time()
             if first_audio_time is None:
                 first_audio_time = t_tts - t_start
-            
-            audio_chunk, chunk_duration, chunk_time = self.tts.synthesize(remaining)
-            
-            # LATENCY OPTIMIZATION: Skip compression for small chunks
-            is_compressed = False
-            if len(audio_chunk) >= 50000:
-                audio_chunk = compress_wav_to_mp3(audio_chunk)
-                is_compressed = True
-            
-            total_tts_time += chunk_time
-            total_duration += chunk_duration
-            
-            print(f"   ✓ Final chunk: \"{remaining[:40]}...\" → {chunk_duration:.1f}s audio {'(mp3)' if is_compressed else '(wav)'}")
-            
-            yield {
-                "type": "audio",
-                "audio": audio_chunk,
-                "text": remaining,
-                "chunk_index": chunk_index,
-                "chunk_duration": chunk_duration,
-                "compressed": is_compressed,
-            }
+                print(f"   ⚡ FIRST AUDIO at {first_audio_time:.2f}s")
+
+            if using_tts_stream:
+                sub_index = 0
+                chunk_start = time.time()
+                for wav_chunk, sample_rate, is_last in self.tts.synthesize_stream(sentence):
+                    chunk_duration = (len(wav_chunk) - 44) / (sample_rate * 2)
+                    total_duration += chunk_duration
+                    compressed = False
+                    if len(wav_chunk) >= 50_000:
+                        wav_chunk = compress_wav_to_mp3(wav_chunk)
+                        compressed = True
+                    yield {
+                        "type": "audio",
+                        "audio": wav_chunk,
+                        "text": sentence if sub_index == 0 else "",
+                        "chunk_index": chunk_index,
+                        "sub_index": sub_index,
+                        "chunk_duration": chunk_duration,
+                        "compressed": compressed,
+                        "is_last_sub": is_last,
+                    }
+                    sub_index += 1
+                chunk_time = time.time() - chunk_start
+                total_tts_time += chunk_time
+            else:
+                audio_chunk, chunk_duration, chunk_time = self.tts.synthesize(sentence)
+                total_tts_time += chunk_time
+                total_duration += chunk_duration
+                compressed = False
+                if len(audio_chunk) >= 50_000:
+                    audio_chunk = compress_wav_to_mp3(audio_chunk)
+                    compressed = True
+                yield {
+                    "type": "audio",
+                    "audio": audio_chunk,
+                    "text": sentence,
+                    "chunk_index": chunk_index,
+                    "chunk_duration": chunk_duration,
+                    "compressed": compressed,
+                }
+
+            print(f"   ✓ Chunk {chunk_index}: \"{sentence[:40]}...\"")
             chunk_index += 1
+
+        for token in self.llm.generate_stream(transcription, system_prompt):
+            full_response.append(token)
+            complete_sentence = chunker.add_token(token)
+            if complete_sentence:
+                yield from _synthesise_and_yield(complete_sentence)
+
+        llm_time = time.time() - llm_start
+
+        remaining = chunker.flush()
+        if remaining:
+            yield from _synthesise_and_yield(remaining)
 
         total_time = time.time() - t_start
         response_text = "".join(full_response).strip()
-        
-        # Print streaming metrics
+
         print(f"\n{'='*70}")
         print(f"{'STREAMING PIPELINE METRICS':^70}")
         print(f"{'='*70}")
-        print(f"  ASR time:           {asr_time:.2f}s")
-        print(f"  LLM stream time:    {llm_time:.2f}s")
-        print(f"  TTS total time:     {total_tts_time:.2f}s")
-        print(f"  First audio at:     {first_audio_time:.2f}s {'✅' if first_audio_time < 2.0 else '⚠️  >2s!'}")
-        print(f"  Audio chunks:       {chunk_index}")
-        print(f"  Total audio:        {total_duration:.1f}s")
-        print(f"  End-to-end:         {total_time:.2f}s")
+        print(f"  ASR time:        {asr_time:.2f}s")
+        print(f"  LLM stream time: {llm_time:.2f}s")
+        print(f"  TTS total time:  {total_tts_time:.2f}s")
+        print(f"  First audio at:  {first_audio_time:.2f}s "
+              f"{'✅' if first_audio_time and first_audio_time < 1.5 else '⚠️  >1.5s!'}")
+        print(f"  Chunks sent:     {chunk_index}")
+        print(f"  Total audio:     {total_duration:.1f}s")
+        print(f"  End-to-end:      {total_time:.2f}s")
         print(f"{'='*70}\n")
 
-        # Yield final completion with full response and metrics
         yield {
             "type": "done",
             "response": response_text,
@@ -1778,6 +1841,64 @@ def get_models() -> dict:
     }
 
 
+@app.function(
+    image=image,
+    timeout=30,
+    gpu=None,
+    secrets=[modal.Secret.from_name("api-keys")],
+)
+@modal.fastapi_endpoint(method="POST")
+def get_tts_token(data: dict) -> dict:
+    import os
+    import time
+    import json
+    import hmac
+    import hashlib
+    import base64
+
+    api_key = os.getenv("INWORLD_API_KEY")
+    if not api_key:
+        raise ValueError("INWORLD_API_KEY not set")
+
+    try:
+        decoded = base64.b64decode(api_key).decode("utf-8")
+        key_id, key_secret = decoded.split(":", 1)
+    except Exception:
+        raise ValueError(
+            "INWORLD_API_KEY must be base64-encoded 'key_id:key_secret'. "
+            "Check your Inworld console."
+        )
+
+    now = int(time.time())
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
+    ).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(
+        json.dumps({
+            "iss": key_id,
+            "sub": key_id,
+            "iat": now,
+            "exp": now + 60,
+        }).encode()
+    ).rstrip(b"=").decode()
+
+    sig_input = f"{header}.{payload}".encode()
+    signature = base64.urlsafe_b64encode(
+        hmac.new(key_secret.encode(), sig_input, hashlib.sha256).digest()
+    ).rstrip(b"=").decode()
+
+    token = f"{header}.{payload}.{signature}"
+    data = data or {}
+
+    return {
+        "token": token,
+        "endpoint": "https://api.inworld.ai/tts/v1/voice:stream",
+        "voice_id": data.get("voice_id", os.getenv("INWORLD_VOICE_ID", "Ashley")),
+        "model_id": data.get("model_id", "inworld-tts-1.5-max"),
+        "expires_in": 60,
+    }
+
+
 # Web API endpoint for frontend
 @app.function(image=image, timeout=600)
 @modal.fastapi_endpoint(method="POST")
@@ -1967,6 +2088,7 @@ def process_web_stream_text():
 @modal.fastapi_endpoint(method="GET")
 def health():
     """Health check endpoint - ping every 30s to keep container warm."""
+    import time
     return {"status": "warm", "timestamp": time.time()}
 
 

@@ -1,0 +1,67 @@
+The big structural pieces are solid, but there are 4 concrete bugs that will cause real failures:
+
+🔴 Bug 1: health() will crash — time not imported
+python# CURRENT — NameError at runtime
+def health():
+    return {"status": "warm", "timestamp": time.time()}  # time never imported!
+
+# FIX
+def health():
+    import time
+    return {"status": "warm", "timestamp": time.time()}
+
+🔴 Bug 2: get_tts_token has no secrets — INWORLD_API_KEY will always be None
+The function is decorated with @app.function but has no secrets= parameter, so os.getenv("INWORLD_API_KEY") always returns None and immediately raises ValueError:
+python# CURRENT — missing secrets, will always raise
+@app.function(image=image, timeout=30, gpu=None)
+@modal.fastapi_endpoint(method="POST")
+def get_tts_token(data: dict) -> dict:
+    ...
+
+# FIX — add the secret that holds INWORLD_API_KEY
+@app.function(
+    image=image,
+    timeout=30,
+    gpu=None,
+    secrets=[modal.Secret.from_name("api-keys")],  # wherever INWORLD_API_KEY lives
+)
+@modal.fastapi_endpoint(method="POST")
+def get_tts_token(data: dict) -> dict:
+    ...
+Same issue applies to SpeechToSpeechService — INWORLD_API_KEY needs to be in one of the listed secrets (api-keys or a new inworld-secret).
+
+🟡 Bug 3: chunk_duration formula is mathematically wrong
+python# CURRENT — wrong, produces garbage duration values
+chunk_duration = len(wav_chunk) / (sample_rate * 2 + 44)
+#                                              ↑ 44 is added to sample_rate, nonsense
+
+# FIX — WAV header is 44 bytes; subtract it, then divide by bytes-per-second
+chunk_duration = (len(wav_chunk) - 44) / (sample_rate * 2)
+#                 audio bytes only          24000 Hz × 2 bytes/sample (16-bit mono)
+This doesn't affect audio playback but will make all your duration metrics and the "output_duration" field in the response wrong for Inworld streaming chunks.
+
+🟡 Bug 4: synthesize_stream accumulates PCM it never uses
+python# CURRENT — allocates a growing buffer that's never read
+def synthesize_stream(self, text: str):
+    accumulated_pcm = b""
+    for pcm_chunk, is_last in self._stream_raw_pcm(text):
+        accumulated_pcm += pcm_chunk   # ← grows unboundedly, never returned
+        wav_chunk = self._pcm_to_wav(pcm_chunk, self.sample_rate)
+        yield (wav_chunk, self.sample_rate, is_last)
+
+# FIX — just remove it
+def synthesize_stream(self, text: str):
+    for pcm_chunk, is_last in self._stream_raw_pcm(text):
+        wav_chunk = self._pcm_to_wav(pcm_chunk, self.sample_rate)
+        yield (wav_chunk, self.sample_rate, is_last)
+For a 10-second response this wastes ~480KB of RAM per call for no reason.
+
+✅ What's genuinely working well now
+
+_stream_raw_pcm lazy iteration with the prev_chunk sentinel — correct
+StreamingSentenceChunker with per-model _chunker_min/max_chars — correct
+supports_streaming branch in process_streaming — correct
+Keep-alive requests.Session() with headers — correct
+JWT vending logic (once secrets are fixed) — correct
+
+Fix those 4 and the pipeline is solid.
