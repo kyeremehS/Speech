@@ -1,6 +1,6 @@
 import os
 from typing import Tuple
-from models_base import TTSModel, register_model
+from components.models_base import TTSModel, register_model
 
 @register_model("tts", "chatterbox")
 class ChatterboxTTS(TTSModel):

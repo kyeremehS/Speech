@@ -14,6 +14,7 @@ from audio_compression import (
     decompress_audio_mp3_to_pcm,
     get_compression_ratio
 )
+from utility import ensure_wav_bytes
 
 def generate_test_audio(duration_seconds: float = 5.0, sample_rate: int = 16000) -> np.ndarray:
     """Generate test audio signal (sine wave + noise)."""
@@ -154,6 +155,25 @@ def test_realistic_scenarios():
     
     return all_passed
 
+def test_binary_roundtrip():
+    print("\n" + "="*60)
+    print("🔁 Testing binary PCM/WAV round-trip...")
+    pcm_data = generate_test_audio(duration_seconds=3.0)
+    pcm_bytes = pcm_data.tobytes()
+    wav_bytes = ensure_wav_bytes(pcm_bytes, sample_rate=16000, channels=1, sample_width=2)
+    sr, decoded = wavfile.read(io.BytesIO(wav_bytes))
+    same_rate = sr == 16000
+    same_len = len(decoded) == len(pcm_data)
+    if decoded.dtype != pcm_data.dtype:
+        decoded = decoded.astype(pcm_data.dtype)
+    diff = np.mean(np.abs(decoded.astype(np.int32) - pcm_data.astype(np.int32)))
+    ok = same_rate and same_len and diff < 2
+    print(f"   Sample rate OK: {same_rate}")
+    print(f"   Length OK: {same_len}")
+    print(f"   Mean abs diff: {diff:.2f}")
+    print(f"   {'✅ PASS' if ok else '❌ FAIL'}")
+    return ok
+
 if __name__ == "__main__":
     print("🚀 Audio Compression Test Suite")
     print("="*60)
@@ -164,12 +184,15 @@ if __name__ == "__main__":
     # Run realistic scenarios test
     realistic_passed = test_realistic_scenarios()
     
+    binary_passed = test_binary_roundtrip()
+    
     print("\n" + "="*60)
     print("📊 FINAL RESULTS:")
     print(f"   Basic pipeline: {'✅ PASS' if basic_passed else '❌ FAIL'}")
     print(f"   Realistic scenarios: {'✅ PASS' if realistic_passed else '❌ FAIL'}")
+    print(f"   Binary round-trip: {'✅ PASS' if binary_passed else '❌ FAIL'}")
     
-    if basic_passed and realistic_passed:
+    if basic_passed and realistic_passed and binary_passed:
         print("\n🎉 All tests passed! Audio compression ready for deployment.")
         print("🎯 Expected network overhead reduction: ≥60%")
         print("🎯 Expected latency improvement: ~2-3 seconds")

@@ -1,5 +1,5 @@
 from typing import Tuple
-from models_base import ASRModel, register_model
+from components.models_base import ASRModel, register_model
 
 @register_model("asr", "nemo")
 class NeMoASR(ASRModel):

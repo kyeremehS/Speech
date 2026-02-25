@@ -1,5 +1,5 @@
 from typing import Optional, Tuple
-from models_base import LLMModel, register_model, VOICE_ASSISTANT_SYSTEM_PROMPT
+from components.models_base import LLMModel, register_model, VOICE_ASSISTANT_SYSTEM_PROMPT
 
 @register_model("llm", "phi3")
 class Phi3LLM(LLMModel):

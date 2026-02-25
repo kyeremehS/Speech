@@ -13,6 +13,7 @@ import threading
 
 import modal
 from audio_compression import compress_wav_to_mp3, decompress_mp3_to_wav, get_compression_ratio
+import requests
 
 # Thread pool for parallel decompression (avoids blocking main loop)
 _decompression_executor = ThreadPoolExecutor(max_workers=2)
@@ -287,6 +288,22 @@ def has_speech(wav_bytes: bytes, min_rms: float = 200.0, min_secs: float = 0.4) 
     rms = np.sqrt(np.mean(data.astype(np.float32) ** 2))
     return rms >= min_rms
 
+def iter_length_prefixed_frames(byte_iter):
+    buffer = b""
+    for chunk in byte_iter:
+        if not chunk:
+            continue
+        buffer += chunk
+        while len(buffer) >= 4:
+            length = int.from_bytes(buffer[:4], "big")
+            if length == 0:
+                return
+            if len(buffer) < 4 + length:
+                break
+            frame = buffer[4:4 + length]
+            buffer = buffer[4 + length:]
+            yield frame
+
 def print_metrics(metrics: dict, network_time: float, record_time: float, models: dict = None):
     """Print detailed latency breakdown."""
     asr = metrics.get("asr_time", 0)
@@ -346,24 +363,38 @@ def main():
     parser = argparse.ArgumentParser(description="Speech-to-Speech Client")
     parser.add_argument("--streaming", action="store_true", 
                         help="Enable TRUE streaming mode for lowest latency")
+    parser.add_argument("--http-url", type=str, default=None)
+    parser.add_argument("--http-stream-url", type=str, default=None)
+    parser.add_argument("--legacy-compression", action="store_true")
     args = parser.parse_args()
     
     print("🚀 Starting real-time speech-to-speech client...")
     print(f"   Mode: {'STREAMING (low latency)' if args.streaming else 'BATCH'}")
-    print("   Connecting to Modal...")
+    use_http = bool(args.http_url or args.http_stream_url)
+    print(f"   Transport: {'HTTP binary' if use_http else 'Modal RPC'}")
     
     try:
-        if args.streaming:
-            # TRUE STREAMING: Audio plays while LLM is still generating
-            process_func = modal.Function.from_name("speech-to-speech", "process_speech_streaming")
-        else:
-            # BATCH: Wait for full response
-            process_func = modal.Function.from_name("speech-to-speech", "process_speech")
+        if not use_http:
+            if args.streaming:
+                process_name = "process_speech_streaming" if args.legacy_compression else "process_speech_streaming_raw"
+            else:
+                process_name = "process_speech" if args.legacy_compression else "process_speech_raw"
+            try:
+                process_func = modal.Function.from_name("speech-to-speech", process_name)
+            except modal.exception.NotFoundError:
+                if not args.legacy_compression:
+                    fallback_name = "process_speech_streaming" if args.streaming else "process_speech"
+                    print(f"⚠️ Raw endpoint missing. Falling back to {fallback_name}.")
+                    args.legacy_compression = True
+                    process_func = modal.Function.from_name("speech-to-speech", fallback_name)
+                else:
+                    raise
     except modal.exception.NotFoundError:
         print("❌ Error: App not deployed. Run 'modal deploy modular_main.py' first.")
         sys.exit(1)
     
-    print("✅ Connected to Modal services.")
+    if not use_http:
+        print("✅ Connected to Modal services.")
     print("   Press Ctrl+C to exit and see session summary.\n")
     
     recorder = AudioRecorder()
@@ -390,13 +421,14 @@ def main():
             if not has_speech(wav_bytes):
                 print("🔇 No speech detected — skipping")
                 continue
-            
-            # Compress audio to reduce network overhead
-            print(f"📦 Original WAV: {len(wav_bytes)} bytes")
-            compressed_bytes = compress_wav_to_mp3(wav_bytes)
-            print(f"📦 Compressed MP3: {len(compressed_bytes)} bytes")
-            compression_ratio = get_compression_ratio(len(wav_bytes), len(compressed_bytes))
-            print(f"📦 Compression ratio: {compression_ratio:.1f}x")
+            payload_bytes = wav_bytes
+            if not use_http and args.legacy_compression:
+                print(f"📦 Original WAV: {len(wav_bytes)} bytes")
+                compressed_bytes = compress_wav_to_mp3(wav_bytes)
+                print(f"📦 Compressed MP3: {len(compressed_bytes)} bytes")
+                compression_ratio = get_compression_ratio(len(wav_bytes), len(compressed_bytes))
+                print(f"📦 Compression ratio: {compression_ratio:.1f}x")
+                payload_bytes = compressed_bytes
             
             # 2. Process through pipeline (ASR -> LLM -> TTS)
             t0 = time.time()
@@ -411,43 +443,50 @@ def main():
                 metrics = {}
                 first_audio_received = None
                 audio_chunks_played = 0
-                
-                for chunk in process_func.remote_gen(compressed_bytes):
-                    chunk_type = chunk.get("type", "")
-                    
-                    if chunk_type == "transcription":
-                        transcription = chunk.get("transcription", "")
-                        print(f"\n📝 You said: \"{transcription}\"")
-                        
-                    elif chunk_type == "audio":
-                        # PLAY IMMEDIATELY - don't wait for more chunks
-                        if first_audio_received is None:
-                            first_audio_received = time.time() - t0
-                            print(f"   ⚡ First audio at {first_audio_received:.2f}s")
-                        
-                        chunk_audio = chunk.get("audio", b"")
-                        text = chunk.get("text", "")
-                        
-                        # Handle both compressed (MP3) and uncompressed (WAV) audio
-                        # Server skips compression for small chunks to reduce TTFA
-                        if chunk.get("compressed", False):
-                            # Decompress MP3 -> WAV (still fast, ~10-20ms)
-                            chunk_audio = decompress_mp3_to_wav(chunk_audio)
-                        # else: already WAV, play directly (saves 30-50ms!)
-                        
-                        print(f"   🔊 Queued: \"{text[:40]}...\"")
-                        player.add_chunk(chunk_audio)  # Returns immediately!
-                        audio_chunks_played += 1
-                        
-                    elif chunk_type == "done":
-                        response = chunk.get("response", "")
-                        metrics = chunk.get("metrics", {})
-                        # Wait for audio to finish before showing completion
-                        player.wait_for_completion()
-                        print(f"\n💬 Full response: \"{response}\"")
-                        
-                    elif chunk_type == "error":
-                        print(f"❌ Error: {chunk.get('error', 'Unknown')}")
+                if use_http:
+                    stream_url = args.http_stream_url or args.http_url
+                    headers = {
+                        "Content-Type": "application/octet-stream",
+                        "x-audio-format": "wav",
+                        "x-sample-rate": str(SAMPLE_RATE),
+                        "x-channels": "1",
+                        "x-sample-width": "2",
+                    }
+                    with requests.post(stream_url, data=payload_bytes, headers=headers, stream=True) as resp:
+                        if resp.status_code != 200:
+                            print(f"❌ HTTP error: {resp.status_code} {resp.text[:200]}")
+                            continue
+                        for frame in iter_length_prefixed_frames(resp.iter_content(chunk_size=4096)):
+                            if first_audio_received is None:
+                                first_audio_received = time.time() - t0
+                                print(f"   ⚡ First audio at {first_audio_received:.2f}s")
+                            player.add_chunk(frame)
+                            audio_chunks_played += 1
+                    player.wait_for_completion()
+                else:
+                    for chunk in process_func.remote_gen(payload_bytes):
+                        chunk_type = chunk.get("type", "")
+                        if chunk_type == "transcription":
+                            transcription = chunk.get("transcription", "")
+                            print(f"\n📝 You said: \"{transcription}\"")
+                        elif chunk_type == "audio":
+                            if first_audio_received is None:
+                                first_audio_received = time.time() - t0
+                                print(f"   ⚡ First audio at {first_audio_received:.2f}s")
+                            chunk_audio = chunk.get("audio", b"")
+                            text = chunk.get("text", "")
+                            if chunk.get("compressed", False):
+                                chunk_audio = decompress_mp3_to_wav(chunk_audio)
+                            print(f"   🔊 Queued: \"{text[:40]}...\"")
+                            player.add_chunk(chunk_audio)
+                            audio_chunks_played += 1
+                        elif chunk_type == "done":
+                            response = chunk.get("response", "")
+                            metrics = chunk.get("metrics", {})
+                            player.wait_for_completion()
+                            print(f"\n💬 Full response: \"{response}\"")
+                        elif chunk_type == "error":
+                            print(f"❌ Error: {chunk.get('error', 'Unknown')}")
                 
                 network_time = time.time() - t0
                 
@@ -458,33 +497,42 @@ def main():
                     session.add_call(metrics, network_time, record_time)
                     
             else:
-                # BATCH MODE: Wait for full response
                 print("🚀 Processing...")
-                result = process_func.remote(compressed_bytes)
-                network_time = time.time() - t0
-                
-                # Extract audio and metrics
-                if isinstance(result, dict):
-                    audio_response = result.get("audio", b"")
-                    metrics = result.get("metrics", {})
-                    models = result.get("models", {})
-                    transcription = result.get("transcription", "")
-                    response = result.get("response", "")
-                    
-                    print(f"\n📝 You said: \"{transcription}\"")
-                    print(f"💬 Response: \"{response}\"")
-                    
-                    print_metrics(metrics, network_time, record_time, models)
-                    session.add_call(metrics, network_time, record_time)
-                else:
-                    audio_response = result
+                if use_http:
+                    headers = {
+                        "Content-Type": "application/octet-stream",
+                        "x-audio-format": "wav",
+                        "x-sample-rate": str(SAMPLE_RATE),
+                        "x-channels": "1",
+                        "x-sample-width": "2",
+                    }
+                    resp = requests.post(args.http_url, data=payload_bytes, headers=headers)
+                    network_time = time.time() - t0
+                    if resp.status_code != 200:
+                        print(f"❌ HTTP error: {resp.status_code} {resp.text[:200]}")
+                        continue
+                    audio_response = resp.content
                     print(f"✅ Response received in {network_time:.2f}s")
-
-                # Decompress and play
-                if isinstance(result, dict) and result.get("compressed", False):
-                    audio_response = decompress_mp3_to_wav(audio_response)
-                
-                play_audio(audio_response)
+                    play_audio(audio_response)
+                else:
+                    result = process_func.remote(payload_bytes)
+                    network_time = time.time() - t0
+                    if isinstance(result, dict):
+                        audio_response = result.get("audio", b"")
+                        metrics = result.get("metrics", {})
+                        models = result.get("models", {})
+                        transcription = result.get("transcription", "")
+                        response = result.get("response", "")
+                        print(f"\n📝 You said: \"{transcription}\"")
+                        print(f"💬 Response: \"{response}\"")
+                        print_metrics(metrics, network_time, record_time, models)
+                        session.add_call(metrics, network_time, record_time)
+                    else:
+                        audio_response = result
+                        print(f"✅ Response received in {network_time:.2f}s")
+                    if isinstance(result, dict) and result.get("compressed", False):
+                        audio_response = decompress_mp3_to_wav(audio_response)
+                    play_audio(audio_response)
             
         except KeyboardInterrupt:
             print("\n👋 Exiting...")

@@ -35,3 +35,24 @@ def decompress_mp3_to_wav(audio_bytes: bytes) -> bytes:
     buffer = io.BytesIO()
     audio.export(buffer, format="wav")
     return buffer.getvalue()
+
+def ensure_wav_bytes(audio_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
+    if audio_bytes.startswith(b"RIFF"):
+        return audio_bytes
+    import io
+    import numpy as np
+    from scipy.io import wavfile
+    if sample_width == 2:
+        dtype = np.int16
+    elif sample_width == 1:
+        dtype = np.int8
+    elif sample_width == 4:
+        dtype = np.int32
+    else:
+        raise ValueError("Unsupported sample width")
+    pcm = np.frombuffer(audio_bytes, dtype=dtype)
+    if channels > 1:
+        pcm = pcm.reshape(-1, channels)
+    buffer = io.BytesIO()
+    wavfile.write(buffer, sample_rate, pcm)
+    return buffer.getvalue()

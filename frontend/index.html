@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
@@ -25,8 +25,16 @@
 
             body {
                 min-height: 100vh;
-                font-family: 'Inter', system-ui, -apple-system, sans-serif;
-                background: radial-gradient(circle at top right, #1e293b 0%, #0f172a 100%);
+                font-family:
+                    "Inter",
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                background: radial-gradient(
+                    circle at top right,
+                    #1e293b 0%,
+                    #0f172a 100%
+                );
                 color: var(--text-main);
                 display: flex;
                 align-items: center;
@@ -91,7 +99,9 @@
                 padding: 24px;
                 margin-bottom: 24px;
                 border: 1px solid rgba(255, 255, 255, 0.05);
-                transition: transform 0.2s ease, box-shadow 0.2s ease;
+                transition:
+                    transform 0.2s ease,
+                    box-shadow 0.2s ease;
             }
 
             .card:hover {
@@ -129,7 +139,11 @@
             }
 
             .btn {
-                background: linear-gradient(135deg, var(--secondary) 0%, var(--primary) 100%);
+                background: linear-gradient(
+                    135deg,
+                    var(--secondary) 0%,
+                    var(--primary) 100%
+                );
                 border: none;
                 padding: 16px;
                 border-radius: 12px;
@@ -165,9 +179,15 @@
             }
 
             @keyframes pulse {
-                0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-                70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
-                100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+                0% {
+                    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+                }
+                70% {
+                    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+                }
+                100% {
+                    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+                }
             }
 
             .status {
@@ -195,7 +215,9 @@
             }
 
             @keyframes spin {
-                to { transform: rotate(360deg); }
+                to {
+                    transform: rotate(360deg);
+                }
             }
 
             .results {
@@ -208,8 +230,14 @@
             }
 
             @keyframes slideUp {
-                from { opacity: 0; transform: translateY(20px); }
-                to { opacity: 1; transform: none; }
+                from {
+                    opacity: 0;
+                    transform: translateY(20px);
+                }
+                to {
+                    opacity: 1;
+                    transform: none;
+                }
             }
 
             .timing {
@@ -282,7 +310,8 @@
                 font-size: 0.9rem;
             }
 
-            th, td {
+            th,
+            td {
                 padding: 12px;
                 text-align: left;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.05);
@@ -324,16 +353,26 @@
             <header>
                 <div class="logo">🎙️</div>
                 <h1>Real-Time Speech Intelligence</h1>
-                <p class="subtitle"> Real-time voice interaction</p>
-                <p class="cold-start-note">⚡ First request may be slower (cold start). Subsequent requests are much faster!</p>
+                <p class="subtitle">Real-time voice interaction</p>
+                <p class="cold-start-note">
+                    ⚡ First request may be slower (cold start). Subsequent
+                    requests are much faster!
+                </p>
             </header>
-
 
             <!-- Record -->
             <div class="card">
                 <h2>🎤 Input</h2>
                 <button class="btn" id="recordBtn">Start Recording</button>
-                <p id="recordingStatus" style="text-align: center; color: var(--text-muted); font-size: 0.9rem; min-height: 20px;"></p>
+                <p
+                    id="recordingStatus"
+                    style="
+                        text-align: center;
+                        color: var(--text-muted);
+                        font-size: 0.9rem;
+                        min-height: 20px;
+                    "
+                ></p>
             </div>
 
             <!-- Process Button -->
@@ -381,9 +420,20 @@
                 </div>
 
                 <!-- Latency Breakdown Table -->
-                <div class="result-item" id="latencyBreakdownSection" style="display: none">
+                <div
+                    class="result-item"
+                    id="latencyBreakdownSection"
+                    style="display: none"
+                >
                     <label>⏱️ Detailed Latency</label>
-                    <div style="overflow-x: auto; background: rgba(0,0,0,0.2); border-radius: 12px; padding: 0 16px;">
+                    <div
+                        style="
+                            overflow-x: auto;
+                            background: rgba(0, 0, 0, 0.2);
+                            border-radius: 12px;
+                            padding: 0 16px;
+                        "
+                    >
                         <table id="latencyBreakdown">
                             <thead>
                                 <tr>
@@ -395,7 +445,15 @@
                             </thead>
                             <tbody></tbody>
                         </table>
-                        <div id="rtfThroughput" style="padding: 16px 0; color: var(--accent); font-size: 0.9rem; border-top: 1px solid rgba(255,255,255,0.05);"></div>
+                        <div
+                            id="rtfThroughput"
+                            style="
+                                padding: 16px 0;
+                                color: var(--accent);
+                                font-size: 0.9rem;
+                                border-top: 1px solid rgba(255, 255, 255, 0.05);
+                            "
+                        ></div>
                     </div>
                 </div>
             </div>
@@ -403,43 +461,52 @@
 
         <script>
             // Config - Your Modal endpoint URLs
-            const PROCESS_URL = 'https://lazy-chat--speech-to-speech-process-web.modal.run';
-            const MODELS_URL = 'https://lazy-chat--speech-to-speech-get-models.modal.run';
-            const STREAM_TEXT_URL = 'https://lazy-chat--speech-to-speech-process-web-stream-text.modal.run';
+            const USE_BINARY_TRANSPORT = true;
+            const PROCESS_URL = USE_BINARY_TRANSPORT
+                ? "https://lazy-chat--speech-to-speech-process-web-binary.modal.run"
+                : "https://lazy-chat--speech-to-speech-process-web.modal.run";
+            const MODELS_URL =
+                "https://lazy-chat--speech-to-speech-get-models.modal.run";
+            const STREAM_TEXT_URL = USE_BINARY_TRANSPORT
+                ? "https://lazy-chat--speech-to-speech-process-web-stream-binary.modal.run"
+                : "https://lazy-chat--speech-to-speech-process-web-stream-text.modal.run";
 
             // Elements
-            const recordBtn = document.getElementById('recordBtn');
-            const recordingStatus = document.getElementById('recordingStatus');
-            const processBtn = document.getElementById('processBtn');
-            const status = document.getElementById('status');
-            const results = document.getElementById('results');
+            const recordBtn = document.getElementById("recordBtn");
+            const recordingStatus = document.getElementById("recordingStatus");
+            const processBtn = document.getElementById("processBtn");
+            const status = document.getElementById("status");
+            const results = document.getElementById("results");
 
             let mediaRecorder;
             let audioChunks = [];
             let recordedBlob = null;
 
             // Helper to format metrics safely
-            const formatMetric = (val, suffix = 's') => {
-                if (val === undefined || val === null || isNaN(val)) return '0.00' + suffix;
+            const formatMetric = (val, suffix = "s") => {
+                if (val === undefined || val === null || isNaN(val))
+                    return "0.00" + suffix;
                 return val.toFixed(2) + suffix;
             };
 
             const formatText = (text) => {
-                if (!text || text === 'undefined') return '...';
+                if (!text || text === "undefined") return "...";
                 return text;
             };
 
-            recordBtn.addEventListener('click', async () => {
-                if (mediaRecorder && mediaRecorder.state === 'recording') {
+            recordBtn.addEventListener("click", async () => {
+                if (mediaRecorder && mediaRecorder.state === "recording") {
                     mediaRecorder.stop();
-                    recordBtn.textContent = 'Start Recording';
-                    recordBtn.classList.remove('recording');
-                    recordingStatus.textContent = 'Recording stopped.';
+                    recordBtn.textContent = "Start Recording";
+                    recordBtn.classList.remove("recording");
+                    recordingStatus.textContent = "Recording stopped.";
                     return;
                 }
 
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: true,
+                    });
                     mediaRecorder = new MediaRecorder(stream);
                     audioChunks = [];
 
@@ -448,76 +515,142 @@
                     };
 
                     mediaRecorder.onstop = () => {
-                        recordedBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                        recordedBlob = new Blob(audioChunks, {
+                            type: "audio/wav",
+                        });
                         processBtn.disabled = false;
-                        recordingStatus.textContent = 'Ready to process.';
+                        recordingStatus.textContent = "Ready to process.";
                         // Auto-process after recording for seamless experience
                         processBtn.click();
                     };
 
                     mediaRecorder.start();
-                    recordBtn.textContent = 'Stop Recording';
-                    recordBtn.classList.add('recording');
-                    recordingStatus.textContent = 'Listening...';
+                    recordBtn.textContent = "Stop Recording";
+                    recordBtn.classList.add("recording");
+                    recordingStatus.textContent = "Listening...";
                     processBtn.disabled = true;
                 } catch (err) {
-                    recordingStatus.textContent = 'Microphone access denied. Please allow permission.';
+                    recordingStatus.textContent =
+                        "Microphone access denied. Please allow permission.";
                     console.error(err);
                 }
             });
 
-            processBtn.addEventListener('click', async () => {
+            processBtn.addEventListener("click", async () => {
                 if (!recordedBlob || recordedBlob.size === 0) {
                     alert("Please record some audio first.");
                     return;
                 }
 
                 processBtn.disabled = true;
-                status.innerHTML = '<span class="spinner"></span> Processing audio...';
-                status.className = 'status processing';
-                results.classList.remove('show');
+                status.innerHTML =
+                    '<span class="spinner"></span> Processing audio...';
+                status.className = "status processing";
+                results.classList.remove("show");
 
                 try {
-                    const base64Audio = await blobToBase64(recordedBlob);
                     const startTime = Date.now();
+                    const useBinary = USE_BINARY_TRANSPORT;
 
-                    const streaming = fetch(STREAM_TEXT_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'text/plain' },
-                        body: base64Audio,
-                    });
-                    (async () => {
-                        try {
-                            const res = await streaming;
-                            if (res.ok && res.body) {
-                                const reader = res.body.getReader();
-                                const decoder = new TextDecoder();
-                                let text = '';
-                                while (true) {
-                                    const { done, value } = await reader.read();
-                                    if (done) break;
-                                    text += decoder.decode(value);
-                                    document.getElementById('response').textContent = formatText(text);
+                    let base64Audio = null;
+                    if (!useBinary) {
+                        base64Audio = await blobToBase64(recordedBlob);
+                        const streaming = fetch(STREAM_TEXT_URL, {
+                            method: "POST",
+                            headers: { "Content-Type": "text/plain" },
+                            body: base64Audio,
+                        });
+                        (async () => {
+                            try {
+                                const res = await streaming;
+                                if (res.ok && res.body) {
+                                    const reader = res.body.getReader();
+                                    const decoder = new TextDecoder();
+                                    let text = "";
+                                    while (true) {
+                                        const { done, value } =
+                                            await reader.read();
+                                        if (done) break;
+                                        text += decoder.decode(value);
+                                        document.getElementById(
+                                            "response",
+                                        ).textContent = formatText(text);
+                                    }
                                 }
-                            }
-                        } catch (e) {}
-                    })();
-                    
-                    const response = await fetch(PROCESS_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ audio_base64: base64Audio }),
-                    });
+                            } catch (e) {}
+                        })();
+                    }
+
+                    let response;
+                    if (useBinary) {
+                        const audioBuffer = await recordedBlob.arrayBuffer();
+                        response = await fetch(PROCESS_URL, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/octet-stream",
+                                "x-audio-format": "wav",
+                                "x-sample-rate": "16000",
+                                "x-channels": "1",
+                                "x-sample-width": "2",
+                            },
+                            body: audioBuffer,
+                        });
+                    } else {
+                        response = await fetch(PROCESS_URL, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ audio_base64: base64Audio }),
+                        });
+                    }
 
                     const clientTime = (Date.now() - startTime) / 1000;
 
                     if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                        throw new Error(
+                            `HTTP ${response.status}: ${await response.text()}`,
+                        );
+                    }
+
+                    if (useBinary) {
+                        const audioBuffer = await response.arrayBuffer();
+                        const audioBlob = new Blob([audioBuffer], {
+                            type: "audio/wav",
+                        });
+                        const audioUrl = URL.createObjectURL(audioBlob);
+                        const audioPlayer =
+                            document.getElementById("audioPlayer");
+                        audioPlayer.src = audioUrl;
+
+                        const playAudio = async () => {
+                            try {
+                                await audioPlayer.play();
+                            } catch (e) {
+                                status.innerHTML =
+                                    "✅ Complete! <small>(Tap play to listen)</small>";
+                            }
+                        };
+
+                        audioPlayer.onloadeddata = playAudio;
+                        if (audioPlayer.readyState >= 3) {
+                            playAudio();
+                        }
+
+                        document.getElementById("transcription").textContent =
+                            "...";
+                        document.getElementById("response").textContent = "...";
+                        document.getElementById(
+                            "latencyBreakdownSection",
+                        ).style.display = "none";
+
+                        status.textContent = "✅ Processing complete";
+                        status.className = "status";
+                        results.classList.add("show");
+                        return;
                     }
 
                     const data = await response.json();
-                    console.log('Response data:', data); // Debug logging
-                    
+                    console.log("Response data:", data); // Debug logging
+
                     // Handle both nested metrics and flat structure
                     const metrics = data.metrics || {
                         asr_time: data.asr_time,
@@ -530,73 +663,121 @@
                     };
 
                     // Update UI safely
-                    document.getElementById('totalTime').textContent = formatMetric(clientTime);
-                    document.getElementById('asrTime').textContent = formatMetric(metrics.asr_time);
-                    document.getElementById('llmTime').textContent = formatMetric(metrics.llm_time);
-                    document.getElementById('ttsTime').textContent = formatMetric(metrics.tts_time);
+                    document.getElementById("totalTime").textContent =
+                        formatMetric(clientTime);
+                    document.getElementById("asrTime").textContent =
+                        formatMetric(metrics.asr_time);
+                    document.getElementById("llmTime").textContent =
+                        formatMetric(metrics.llm_time);
+                    document.getElementById("ttsTime").textContent =
+                        formatMetric(metrics.tts_time);
 
-                    document.getElementById('transcription').textContent = formatText(data.transcription);
-                    document.getElementById('response').textContent = formatText(data.response);
+                    document.getElementById("transcription").textContent =
+                        formatText(data.transcription);
+                    document.getElementById("response").textContent =
+                        formatText(data.response);
 
                     // Detailed breakdown
                     const asr = metrics.asr_time || 0;
                     const llm = metrics.llm_time || 0;
                     const tts = metrics.tts_time || 0;
-                    const pipeline = metrics.total_pipeline || metrics.total_time || 0.001;
+                    const pipeline =
+                        metrics.total_pipeline || metrics.total_time || 0.001;
                     const input_dur = metrics.input_duration || 0;
                     const output_dur = metrics.output_duration || 0;
 
                     // Calculate safe percentages
-                    const getPct = (val) => ((val / pipeline) * 100).toFixed(1) + '%';
+                    const getPct = (val) =>
+                        ((val / pipeline) * 100).toFixed(1) + "%";
 
-                    const rtf = input_dur > 0 ? (clientTime / input_dur).toFixed(2) : '0.00';
-                    const throughput = clientTime > 0 ? (output_dur / clientTime).toFixed(2) : '0.00';
+                    const rtf =
+                        input_dur > 0
+                            ? (clientTime / input_dur).toFixed(2)
+                            : "0.00";
+                    const throughput =
+                        clientTime > 0
+                            ? (output_dur / clientTime).toFixed(2)
+                            : "0.00";
 
                     const latencyRows = [
-                        ['Recording', '-', '-', `${input_dur.toFixed(1)}s captured`],
-                        ['ASR', formatMetric(asr), getPct(asr), 'Speech → Text'],
-                        ['LLM', formatMetric(llm), getPct(llm), 'Text Gen'],
-                        ['TTS', formatMetric(tts), getPct(tts), `Text → ${output_dur.toFixed(1)}s Audio`],
-                        ['Pipeline Total', formatMetric(pipeline), '100%', 'Server Processing'],
-                        ['End-to-End', formatMetric(clientTime), '-', 'Total Latency']
+                        [
+                            "Recording",
+                            "-",
+                            "-",
+                            `${input_dur.toFixed(1)}s captured`,
+                        ],
+                        [
+                            "ASR",
+                            formatMetric(asr),
+                            getPct(asr),
+                            "Speech → Text",
+                        ],
+                        ["LLM", formatMetric(llm), getPct(llm), "Text Gen"],
+                        [
+                            "TTS",
+                            formatMetric(tts),
+                            getPct(tts),
+                            `Text → ${output_dur.toFixed(1)}s Audio`,
+                        ],
+                        [
+                            "Pipeline Total",
+                            formatMetric(pipeline),
+                            "100%",
+                            "Server Processing",
+                        ],
+                        [
+                            "End-to-End",
+                            formatMetric(clientTime),
+                            "-",
+                            "Total Latency",
+                        ],
                     ];
 
-                    const tbody = document.querySelector('#latencyBreakdown tbody');
-                    tbody.innerHTML = '';
+                    const tbody = document.querySelector(
+                        "#latencyBreakdown tbody",
+                    );
+                    tbody.innerHTML = "";
                     latencyRows.forEach((row, i) => {
-                        const tr = document.createElement('tr');
-                        row.forEach(cell => {
-                            const td = document.createElement('td');
+                        const tr = document.createElement("tr");
+                        row.forEach((cell) => {
+                            const td = document.createElement("td");
                             td.textContent = cell;
                             tr.appendChild(td);
                         });
                         tbody.appendChild(tr);
                     });
 
-                    document.getElementById('latencyBreakdownSection').style.display = 'block';
-                    document.getElementById('rtfThroughput').innerHTML =
+                    document.getElementById(
+                        "latencyBreakdownSection",
+                    ).style.display = "block";
+                    document.getElementById("rtfThroughput").innerHTML =
                         `Real-Time Factor: <b>${rtf}x</b> &nbsp;|&nbsp; Throughput: <b>${throughput}x</b> realtime`;
 
                     // Audio Handling - backend returns audio_base64 as WAV
                     const audioData = data.audio_base64 || data.audio;
-                    console.log('Audio data received:', audioData ? `${audioData.length} chars` : 'NONE');
-                    
+                    console.log(
+                        "Audio data received:",
+                        audioData ? `${audioData.length} chars` : "NONE",
+                    );
+
                     if (audioData) {
-                        console.log('Creating audio blob...');
-                        const audioBlob = base64ToBlob(audioData, 'audio/wav');
-                        console.log('Audio blob size:', audioBlob.size);
+                        console.log("Creating audio blob...");
+                        const audioBlob = base64ToBlob(audioData, "audio/wav");
+                        console.log("Audio blob size:", audioBlob.size);
                         const audioUrl = URL.createObjectURL(audioBlob);
-                        const audioPlayer = document.getElementById('audioPlayer');
+                        const audioPlayer =
+                            document.getElementById("audioPlayer");
                         audioPlayer.src = audioUrl;
 
                         // Robust auto-play
                         const playAudio = async () => {
                             try {
                                 await audioPlayer.play();
-                                console.log('Audio playing');
+                                console.log("Audio playing");
                             } catch (e) {
                                 console.warn("Auto-play blocked:", e);
-                                status.innerHTML = '✅ Complete! <small>(Tap play to listen)</small>';
+                                status.innerHTML =
+                                    "✅ Complete! <small>(Tap play to listen)</small>";
                             }
                         };
 
@@ -606,22 +787,22 @@
                             playAudio();
                         }
 
-                        status.textContent = '✅ Processing complete';
-                        status.className = 'status';
-                        results.classList.add('show');
+                        status.textContent = "✅ Processing complete";
+                        status.className = "status";
+                        results.classList.add("show");
                     } else {
                         console.error("No audio in response", data);
-                        status.textContent = '⚠️ Response received but no audio';
-                        status.className = 'status';
+                        status.textContent =
+                            "⚠️ Response received but no audio";
+                        status.className = "status";
                         // Still show results if text is there
                         if (data.response) {
-                             results.classList.add('show');
+                            results.classList.add("show");
                         }
                     }
-
                 } catch (error) {
                     status.innerHTML = `<div class="error-msg">❌ Error: ${error.message}</div>`;
-                    status.className = 'status';
+                    status.className = "status";
                 } finally {
                     processBtn.disabled = false;
                 }
@@ -634,18 +815,18 @@
                 for (let i = 0; i < bytes.length; i++) {
                     view[i] = bytes.charCodeAt(i);
                 }
-                return new Blob([buffer], {type});
+                return new Blob([buffer], { type });
             }
 
             function blobToBase64(blob) {
                 return new Promise((resolve, reject) => {
                     const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                    reader.onloadend = () =>
+                        resolve(reader.result.split(",")[1]);
                     reader.onerror = reject;
                     reader.readAsDataURL(blob);
                 });
             }
-
         </script>
     </body>
 </html>
