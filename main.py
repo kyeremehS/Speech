@@ -29,14 +29,22 @@ Usage:
     $env:ASR_MODEL="nemo"; $env:LLM_MODEL="gpt4omini"; $env:TTS_MODEL="chatterbox"; modal deploy modular_main.py
 
 """
-import modal
+
+from __future__ import annotations
+
 import os
-from typing import Optional, Dict
+from typing import Dict, Optional
+
+import modal
+
+try:
+    from fastapi import Request
+except Exception:  # pragma: no cover
+    Request = object
+
+from components import models_asr, models_llm, models_tts
+from components.models_base import MODEL_REGISTRY, ModelConfig, StreamingSentenceChunker
 from helper.utility import compress_wav_to_mp3, decompress_mp3_to_wav, ensure_wav_bytes
-from components.models_base import ModelConfig, MODEL_REGISTRY, StreamingSentenceChunker
-from components import models_asr
-from components import models_llm
-from components import models_tts
 
 ENABLE_LEGACY_WEB = os.getenv("ENABLE_LEGACY_WEB", "0") == "1"
 # Modal App Setup
@@ -62,6 +70,7 @@ image = (
     .pip_install("diffusers>=0.25.0", "soundfile")
 )
 
+
 def add_local_dir(image_obj, local_dir: str, remote_dir: str):
     if hasattr(image_obj, "copy_local_dir"):
         return image_obj.copy_local_dir(local_dir, remote_dir)
@@ -69,13 +78,19 @@ def add_local_dir(image_obj, local_dir: str, remote_dir: str):
         return image_obj.add_local_dir(local_dir, remote_dir)
     raise AttributeError("No supported local dir method on modal.Image")
 
-image = image.run_commands(
-    "git clone --depth 1 https://github.com/microsoft/VibeVoice.git /tmp/vibevoice && "
-    "cd /tmp/vibevoice && pip install -e . && "
-    "cd /tmp/vibevoice/demo && bash download_experimental_voices.sh && "
-    "mkdir -p /root/vibevoice_voices && "
-    "cp -r /tmp/vibevoice/demo/voices/* /root/vibevoice_voices/"
-).pip_install("orpheus-speech", "vllm==0.7.3").pip_install("openai", "groq").pip_install("fastapi", "uvicorn")
+
+image = (
+    image.run_commands(
+        "git clone --depth 1 https://github.com/microsoft/VibeVoice.git /tmp/vibevoice && "
+        "cd /tmp/vibevoice && pip install -e . && "
+        "cd /tmp/vibevoice/demo && bash download_experimental_voices.sh && "
+        "mkdir -p /root/vibevoice_voices && "
+        "cp -r /tmp/vibevoice/demo/voices/* /root/vibevoice_voices/"
+    )
+    .pip_install("orpheus-speech", "vllm==0.7.3")
+    .pip_install("openai", "groq")
+    .pip_install("fastapi", "uvicorn")
+)
 image = add_local_dir(image, "helper", "/root/helper")
 image = add_local_dir(image, "components", "/root/components")
 
@@ -87,9 +102,11 @@ _ASR_MODEL = os.getenv("ASR_MODEL", "nemo")
 _LLM_MODEL = os.getenv("LLM_MODEL", "phi3")
 _TTS_MODEL = os.getenv("TTS_MODEL", "parler")
 
+
 def split_sentences(text: str) -> list:
     import re
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     merged = []
     buffer = ""
     for s in sentences:
@@ -103,8 +120,10 @@ def split_sentences(text: str) -> list:
         merged.append(buffer)
     return merged if merged else [text]
 
+
 def get_model_class(model_type: str, model_name: str):
     return MODEL_REGISTRY[model_type].get(model_name)
+
 
 def require_model_class(model_type: str, model_name: str):
     model_class = get_model_class(model_type, model_name)
@@ -114,10 +133,12 @@ def require_model_class(model_type: str, model_name: str):
         )
     return model_class
 
+
 def load_model(model_class):
     model = model_class()
     model.load()
     return model
+
 
 def get_or_load_model(model_type: str, model_name: str, cache: dict):
     if model_name in cache:
@@ -129,11 +150,12 @@ def get_or_load_model(model_type: str, model_name: str, cache: dict):
     cache[model_name] = model
     return model
 
+
 def normalize_audio_bytes(audio_bytes: bytes, log_decompress: bool = False):
     if not audio_bytes:
         return None, False, 0
     original_size = len(audio_bytes)
-    if audio_bytes.startswith(b'RIFF'):
+    if audio_bytes.startswith(b"RIFF"):
         return audio_bytes, False, original_size
     try:
         if log_decompress:
@@ -147,16 +169,27 @@ def normalize_audio_bytes(audio_bytes: bytes, log_decompress: bool = False):
             print(f"⚠️  Decompression failed, assuming WAV: {e}")
         return audio_bytes, False, original_size
 
-def normalize_binary_audio(audio_bytes: bytes, sample_rate: int, channels: int, sample_width: int):
+
+def normalize_binary_audio(
+    audio_bytes: bytes, sample_rate: int, channels: int, sample_width: int
+):
     if not audio_bytes:
         return None
     if audio_bytes.startswith(b"RIFF"):
         return audio_bytes
-    return ensure_wav_bytes(audio_bytes, sample_rate=sample_rate, channels=channels, sample_width=sample_width)
+    return ensure_wav_bytes(
+        audio_bytes,
+        sample_rate=sample_rate,
+        channels=channels,
+        sample_width=sample_width,
+    )
+
 
 def get_wav_duration(audio_bytes: bytes) -> float:
-    from scipy.io import wavfile
     import io
+
+    from scipy.io import wavfile
+
     try:
         with io.BytesIO(audio_bytes) as f:
             sr, data = wavfile.read(f)
@@ -164,13 +197,16 @@ def get_wav_duration(audio_bytes: bytes) -> float:
     except Exception:
         return 0.0
 
+
 def compress_if_large(audio_bytes: bytes, threshold: int = 50_000):
     if len(audio_bytes) < threshold:
         return audio_bytes, False
     return compress_wav_to_mp3(audio_bytes), True
 
+
 def stream_tts_sentence(tts, sentence: str, using_tts_stream: bool, state: dict):
     import time
+
     t_tts = time.time()
     if state["first_audio_time"] is None:
         state["first_audio_time"] = t_tts - state["t_start"]
@@ -209,11 +245,13 @@ def stream_tts_sentence(tts, sentence: str, using_tts_stream: bool, state: dict)
             "compressed": compressed,
         }
 
-    print(f"   ✓ Chunk {state['chunk_index']}: \"{sentence[:40]}...\"")
+    print(f'   ✓ Chunk {state["chunk_index"]}: "{sentence[:40]}..."')
     state["chunk_index"] += 1
+
 
 def stream_tts_sentence_raw(tts, sentence: str, using_tts_stream: bool, state: dict):
     import time
+
     t_tts = time.time()
     if state["first_audio_time"] is None:
         state["first_audio_time"] = t_tts - state["t_start"]
@@ -248,8 +286,9 @@ def stream_tts_sentence_raw(tts, sentence: str, using_tts_stream: bool, state: d
             "chunk_duration": chunk_duration,
             "compressed": False,
         }
-    print(f"   ✓ Chunk {state['chunk_index']}: \"{sentence[:40]}...\"")
+    print(f'   ✓ Chunk {state["chunk_index"]}: "{sentence[:40]}..."')
     state["chunk_index"] += 1
+
 
 @app.cls(
     image=image,
@@ -259,15 +298,17 @@ def stream_tts_sentence_raw(tts, sentence: str, using_tts_stream: bool, state: d
     # max_containers=1,
     scaledown_window=300,
     secrets=[
-        modal.Secret.from_dict({
-            "ASR_MODEL": _ASR_MODEL,
-            "LLM_MODEL": _LLM_MODEL,
-            "TTS_MODEL": _TTS_MODEL,
-        }),
+        modal.Secret.from_dict(
+            {
+                "ASR_MODEL": _ASR_MODEL,
+                "LLM_MODEL": _LLM_MODEL,
+                "TTS_MODEL": _TTS_MODEL,
+            }
+        ),
         modal.Secret.from_name("hf-secret"),
-        modal.Secret.from_name("api-keys"), 
+        modal.Secret.from_name("api-keys"),
         modal.Secret.from_name("groq-secret"),
-     ],
+    ],
 )
 class SpeechToSpeechService:
     """
@@ -276,7 +317,7 @@ class SpeechToSpeechService:
     Change models via environment variables:
         ASR_MODEL=whisper LLM_MODEL=llama TTS_MODEL=chatterbox
     """
-    
+
     # Class-level caches for loaded models
     loaded_asr: dict = {}
     loaded_llm: dict = {}
@@ -316,7 +357,7 @@ class SpeechToSpeechService:
         vram_total = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"\n📊 VRAM: {vram_used:.1f}GB / {vram_total:.1f}GB")
         print("=" * 70)
-        
+
         try:
             _ = self.llm.generate("Hello", "You are a helpful voice assistant.")
         except Exception as _:
@@ -327,14 +368,16 @@ class SpeechToSpeechService:
             pass
 
     @modal.method()
-    def process_streaming(self, audio_bytes: bytes, system_prompt: Optional[str] = None):
+    def process_streaming(
+        self, audio_bytes: bytes, system_prompt: Optional[str] = None
+    ):
         """
         TRUE STREAMING speech-to-speech pipeline.
-        
+
         When TTS supports streaming (Inworld), audio chunks begin
         flowing to the client BEFORE a full sentence has even been
         synthesised — shaving another 100-200 ms off perceived latency.
-        
+
         Yield contract (unchanged):
           {"type": "transcription", ...}
           {"type": "audio", "audio": <bytes>, "compressed": False, ...}  (N times)
@@ -370,7 +413,9 @@ class SpeechToSpeechService:
         chunker = StreamingSentenceChunker(min_chars=min_chars, max_chars=max_chars)
 
         using_tts_stream = self.tts.supports_streaming
-        print(f"🔊 [{self.tts.model_name}] {'True-stream' if using_tts_stream else 'Batch'} TTS")
+        print(
+            f"🔊 [{self.tts.model_name}] {'True-stream' if using_tts_stream else 'Batch'} TTS"
+        )
 
         llm_start = time.time()
         state = {
@@ -386,7 +431,9 @@ class SpeechToSpeechService:
             full_response.append(token)
             complete_sentence = chunker.add_token(token)
             if complete_sentence:
-                yield from stream_tts_sentence(self.tts, complete_sentence, using_tts_stream, state)
+                yield from stream_tts_sentence(
+                    self.tts, complete_sentence, using_tts_stream, state
+                )
 
         llm_time = time.time() - llm_start
 
@@ -397,18 +444,20 @@ class SpeechToSpeechService:
         total_time = time.time() - t_start
         response_text = "".join(full_response).strip()
 
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"{'STREAMING PIPELINE METRICS':^70}")
-        print(f"{'='*70}")
+        print(f"{'=' * 70}")
         print(f"  ASR time:        {asr_time:.2f}s")
         print(f"  LLM stream time: {llm_time:.2f}s")
         print(f"  TTS total time:  {state['total_tts_time']:.2f}s")
-        print(f"  First audio at:  {state['first_audio_time']:.2f}s "
-              f"{'✅' if state['first_audio_time'] and state['first_audio_time'] < 1.5 else '⚠️  >1.5s!'}")
+        print(
+            f"  First audio at:  {state['first_audio_time']:.2f}s "
+            f"{'✅' if state['first_audio_time'] and state['first_audio_time'] < 1.5 else '⚠️  >1.5s!'}"
+        )
         print(f"  Chunks sent:     {state['chunk_index']}")
         print(f"  Total audio:     {state['total_duration']:.1f}s")
         print(f"  End-to-end:      {total_time:.2f}s")
-        print(f"{'='*70}\n")
+        print(f"{'=' * 70}\n")
 
         yield {
             "type": "done",
@@ -421,15 +470,24 @@ class SpeechToSpeechService:
                 "first_audio_time": state["first_audio_time"],
                 "output_duration": state["total_duration"],
                 "chunks": state["chunk_index"],
-            }
+            },
         }
 
     @modal.method()
-    def process_streaming_raw(self, audio_bytes: bytes, system_prompt: Optional[str] = None,
-                              sample_rate: int = 16000, channels: int = 1, sample_width: int = 2):
+    def process_streaming_raw(
+        self,
+        audio_bytes: bytes,
+        system_prompt: Optional[str] = None,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        sample_width: int = 2,
+    ):
         import time
+
         t_start = time.time()
-        audio_bytes = normalize_binary_audio(audio_bytes, sample_rate, channels, sample_width)
+        audio_bytes = normalize_binary_audio(
+            audio_bytes, sample_rate, channels, sample_width
+        )
         if not audio_bytes:
             yield {"type": "error", "error": "Empty input audio"}
             return
@@ -449,7 +507,9 @@ class SpeechToSpeechService:
         max_chars = getattr(self.tts, "_chunker_max_chars", 100)
         chunker = StreamingSentenceChunker(min_chars=min_chars, max_chars=max_chars)
         using_tts_stream = self.tts.supports_streaming
-        print(f"🔊 [{self.tts.model_name}] {'True-stream' if using_tts_stream else 'Batch'} TTS")
+        print(
+            f"🔊 [{self.tts.model_name}] {'True-stream' if using_tts_stream else 'Batch'} TTS"
+        )
         llm_start = time.time()
         state = {
             "t_start": t_start,
@@ -463,11 +523,15 @@ class SpeechToSpeechService:
             full_response.append(token)
             complete_sentence = chunker.add_token(token)
             if complete_sentence:
-                yield from stream_tts_sentence_raw(self.tts, complete_sentence, using_tts_stream, state)
+                yield from stream_tts_sentence_raw(
+                    self.tts, complete_sentence, using_tts_stream, state
+                )
         llm_time = time.time() - llm_start
         remaining = chunker.flush()
         if remaining:
-            yield from stream_tts_sentence_raw(self.tts, remaining, using_tts_stream, state)
+            yield from stream_tts_sentence_raw(
+                self.tts, remaining, using_tts_stream, state
+            )
         total_time = time.time() - t_start
         response_text = "".join(full_response).strip()
         yield {
@@ -481,18 +545,21 @@ class SpeechToSpeechService:
                 "first_audio_time": state["first_audio_time"],
                 "output_duration": state["total_duration"],
                 "chunks": state["chunk_index"],
-            }
+            },
         }
 
     @modal.method()
-    def process_streaming_legacy(self, audio_bytes: bytes, system_prompt: Optional[str] = None):
+    def process_streaming_legacy(
+        self, audio_bytes: bytes, system_prompt: Optional[str] = None
+    ):
         """
         LEGACY streaming - waits for full LLM response, then streams TTS by sentence.
-        
+
         This is SUBOPTIMAL - use process_streaming() for true overlap.
         Kept for backward compatibility.
         """
         import time
+
         t_start = time.time()
 
         audio_bytes, _, _ = normalize_audio_bytes(audio_bytes)
@@ -533,7 +600,7 @@ class SpeechToSpeechService:
             total_tts_time += chunk_time
             total_duration += chunk_duration
 
-            print(f"   ✓ Chunk {i+1}/{len(sentences)}: {chunk_time:.2f}s")
+            print(f"   ✓ Chunk {i + 1}/{len(sentences)}: {chunk_time:.2f}s")
 
             yield {
                 "type": "audio",
@@ -546,9 +613,9 @@ class SpeechToSpeechService:
 
         # Yield final metrics
         total_time = time.time() - t_start
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"Streaming complete: {total_time:.2f}s total, {len(sentences)} chunks")
-        print(f"{'='*70}\n")
+        print(f"{'=' * 70}\n")
 
         yield {
             "type": "done",
@@ -559,28 +626,43 @@ class SpeechToSpeechService:
                 "total_time": total_time,
                 "output_duration": total_duration,
                 "chunks": len(sentences),
-            }
+            },
         }
 
     @modal.method()
-    def process(self, audio_bytes: bytes, system_prompt: Optional[str] = None,
-                asr_model: Optional[str] = None, llm_model: Optional[str] = None, 
-                tts_model: Optional[str] = None) -> Dict:
+    def process(
+        self,
+        audio_bytes: bytes,
+        system_prompt: Optional[str] = None,
+        asr_model: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        tts_model: Optional[str] = None,
+    ) -> Dict:
         """
         Complete speech-to-speech pipeline with compression support.
         Compatible with real-time VAD client.
-        
+
         Optionally specify models to use:
             asr_model: "nemo", "whisper", "faster-whisper"
             llm_model: "phi3", "llama", "gpt4omini", "llama31-groq", "qwen3"
             tts_model: "chatterbox", "parler", "vibevoice", "orpheus", "inworld-tts-1.5-max"
         """
         import time
+
         t_start = time.time()
-        
-        asr = get_or_load_model("asr", asr_model or self.config.asr, self.loaded_asr) or self.asr
-        llm = get_or_load_model("llm", llm_model or self.config.llm, self.loaded_llm) or self.llm
-        tts = get_or_load_model("tts", tts_model or self.config.tts, self.loaded_tts) or self.tts
+
+        asr = (
+            get_or_load_model("asr", asr_model or self.config.asr, self.loaded_asr)
+            or self.asr
+        )
+        llm = (
+            get_or_load_model("llm", llm_model or self.config.llm, self.loaded_llm)
+            or self.llm
+        )
+        tts = (
+            get_or_load_model("tts", tts_model or self.config.tts, self.loaded_tts)
+            or self.tts
+        )
 
         audio_bytes, _, _ = normalize_audio_bytes(audio_bytes, log_decompress=True)
         if not audio_bytes:
@@ -614,10 +696,12 @@ class SpeechToSpeechService:
         total_time = time.time() - t_start
 
         # Print metrics
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"Pipeline: {asr.model_name} → {llm.model_name} → {tts.model_name}")
-        print(f"Total: {total_time:.2f}s (ASR:{asr_time:.2f}s LLM:{llm_time:.2f}s TTS:{tts_time:.2f}s)")
-        print(f"{'='*70}\n")
+        print(
+            f"Total: {total_time:.2f}s (ASR:{asr_time:.2f}s LLM:{llm_time:.2f}s TTS:{tts_time:.2f}s)"
+        )
+        print(f"{'=' * 70}\n")
 
         return {
             "audio": audio_response,
@@ -639,20 +723,39 @@ class SpeechToSpeechService:
                 "output_duration": output_duration,
                 "input_chars": len(transcription),
                 "output_chars": len(response),
-            }
+            },
         }
 
     @modal.method()
-    def process_raw(self, audio_bytes: bytes, system_prompt: Optional[str] = None,
-                    asr_model: Optional[str] = None, llm_model: Optional[str] = None,
-                    tts_model: Optional[str] = None, sample_rate: int = 16000,
-                    channels: int = 1, sample_width: int = 2) -> Dict:
+    def process_raw(
+        self,
+        audio_bytes: bytes,
+        system_prompt: Optional[str] = None,
+        asr_model: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        tts_model: Optional[str] = None,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        sample_width: int = 2,
+    ) -> Dict:
         import time
+
         t_start = time.time()
-        asr = get_or_load_model("asr", asr_model or self.config.asr, self.loaded_asr) or self.asr
-        llm = get_or_load_model("llm", llm_model or self.config.llm, self.loaded_llm) or self.llm
-        tts = get_or_load_model("tts", tts_model or self.config.tts, self.loaded_tts) or self.tts
-        audio_bytes = normalize_binary_audio(audio_bytes, sample_rate, channels, sample_width)
+        asr = (
+            get_or_load_model("asr", asr_model or self.config.asr, self.loaded_asr)
+            or self.asr
+        )
+        llm = (
+            get_or_load_model("llm", llm_model or self.config.llm, self.loaded_llm)
+            or self.llm
+        )
+        tts = (
+            get_or_load_model("tts", tts_model or self.config.tts, self.loaded_tts)
+            or self.tts
+        )
+        audio_bytes = normalize_binary_audio(
+            audio_bytes, sample_rate, channels, sample_width
+        )
         if not audio_bytes:
             print("❌ Input audio bytes are empty")
             return {"error": "Empty input audio"}
@@ -687,8 +790,9 @@ class SpeechToSpeechService:
                 "output_duration": output_duration,
                 "input_chars": len(transcription),
                 "output_chars": len(response),
-            }
+            },
         }
+
 
 # Backward Compatible Wrapper (for existing client.py
 @app.function(image=image, timeout=600)
@@ -697,7 +801,6 @@ def process_speech(audio_bytes: bytes) -> dict:
     service = SpeechToSpeechService()
     return service.process.remote(audio_bytes)
 
- 
 
 @app.function(image=image, timeout=600)
 def process_speech_streaming(audio_bytes: bytes):
@@ -706,15 +809,37 @@ def process_speech_streaming(audio_bytes: bytes):
     for chunk in service.process_streaming.remote_gen(audio_bytes):
         yield chunk
 
-@app.function(image=image, timeout=600)
-def process_speech_raw(audio_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> dict:
-    service = SpeechToSpeechService()
-    return service.process_raw.remote(audio_bytes, sample_rate=sample_rate, channels=channels, sample_width=sample_width)
 
 @app.function(image=image, timeout=600)
-def process_speech_streaming_raw(audio_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2):
+def process_speech_raw(
+    audio_bytes: bytes,
+    sample_rate: int = 16000,
+    channels: int = 1,
+    sample_width: int = 2,
+) -> dict:
     service = SpeechToSpeechService()
-    for chunk in service.process_streaming_raw.remote_gen(audio_bytes, sample_rate=sample_rate, channels=channels, sample_width=sample_width):
+    return service.process_raw.remote(
+        audio_bytes,
+        sample_rate=sample_rate,
+        channels=channels,
+        sample_width=sample_width,
+    )
+
+
+@app.function(image=image, timeout=600)
+def process_speech_streaming_raw(
+    audio_bytes: bytes,
+    sample_rate: int = 16000,
+    channels: int = 1,
+    sample_width: int = 2,
+):
+    service = SpeechToSpeechService()
+    for chunk in service.process_streaming_raw.remote_gen(
+        audio_bytes,
+        sample_rate=sample_rate,
+        channels=channels,
+        sample_width=sample_width,
+    ):
         yield chunk
 
 
@@ -734,11 +859,12 @@ def get_models() -> dict:
             "asr": config.asr,
             "llm": config.llm,
             "tts": config.tts,
-        }
+        },
     }
 
 
 if ENABLE_LEGACY_WEB:
+
     @app.function(
         image=image,
         timeout=30,
@@ -747,12 +873,12 @@ if ENABLE_LEGACY_WEB:
     )
     @modal.fastapi_endpoint(method="POST")
     def get_tts_token(data: dict) -> dict:
+        import base64
+        import hashlib
+        import hmac
+        import json
         import os
         import time
-        import json
-        import hmac
-        import hashlib
-        import base64
 
         api_key = os.getenv("INWORLD_API_KEY")
         if not api_key:
@@ -768,22 +894,36 @@ if ENABLE_LEGACY_WEB:
             )
 
         now = int(time.time())
-        header = base64.urlsafe_b64encode(
-            json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
-        ).rstrip(b"=").decode()
-        payload = base64.urlsafe_b64encode(
-            json.dumps({
-                "iss": key_id,
-                "sub": key_id,
-                "iat": now,
-                "exp": now + 60,
-            }).encode()
-        ).rstrip(b"=").decode()
+        header = (
+            base64.urlsafe_b64encode(
+                json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
+        payload = (
+            base64.urlsafe_b64encode(
+                json.dumps(
+                    {
+                        "iss": key_id,
+                        "sub": key_id,
+                        "iat": now,
+                        "exp": now + 60,
+                    }
+                ).encode()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
 
         sig_input = f"{header}.{payload}".encode()
-        signature = base64.urlsafe_b64encode(
-            hmac.new(key_secret.encode(), sig_input, hashlib.sha256).digest()
-        ).rstrip(b"=").decode()
+        signature = (
+            base64.urlsafe_b64encode(
+                hmac.new(key_secret.encode(), sig_input, hashlib.sha256).digest()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
 
         token = f"{header}.{payload}.{signature}"
         data = data or {}
@@ -798,31 +938,42 @@ if ENABLE_LEGACY_WEB:
 
 
 if ENABLE_LEGACY_WEB:
+
     @app.function(image=image, timeout=600)
     @modal.fastapi_endpoint(method="POST")
     def process_web(data: dict) -> dict:
         import base64
+
         print(f"📥 Received request data keys: {list(data.keys()) if data else 'None'}")
         print(f"📥 Data type: {type(data)}")
         audio_base64 = data.get("audio_base64", "") if data else ""
         if not audio_base64:
             print(f"❌ audio_base64 is empty. Full data: {str(data)[:500]}")
-            raise ValueError(f"No audio data received. 'audio_base64' is empty or missing. Received keys: {list(data.keys()) if data else 'None'}")
+            raise ValueError(
+                f"No audio data received. 'audio_base64' is empty or missing. Received keys: {list(data.keys()) if data else 'None'}"
+            )
         print(f"📥 Received audio_base64: {len(audio_base64)} chars")
         try:
             audio_bytes = base64.b64decode(audio_base64)
         except Exception as e:
             raise ValueError(f"Failed to decode base64 audio: {e}")
         if len(audio_bytes) < 100:
-            raise ValueError(f"Audio data too small: {len(audio_bytes)} bytes. Expected valid audio file.")
+            raise ValueError(
+                f"Audio data too small: {len(audio_bytes)} bytes. Expected valid audio file."
+            )
         print(f"📥 Decoded audio: {len(audio_bytes)} bytes")
         system_prompt = data.get("system_prompt")
         asr_model = data.get("asr_model")
         tts_model = data.get("tts_model")
         import os
+
         cfg = ModelConfig()
         llm_requested = data.get("llm_model")
-        groq_key = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("groq_api_key")
+        groq_key = (
+            os.environ.get("GROQ_API_KEY")
+            or os.environ.get("GROQ_KEY")
+            or os.environ.get("groq_api_key")
+        )
         openai_key = os.environ.get("OPENAI_API_KEY")
         if llm_requested == "gpt4omini":
             if openai_key:
@@ -847,14 +998,13 @@ if ENABLE_LEGACY_WEB:
                 system_prompt,
                 asr_model=asr_model,
                 llm_model=llm_model,
-                tts_model=tts_model
+                tts_model=tts_model,
             )
         except Exception as e:
-            print(f"⚠️ Error processing request (likely missing API key): {e}. Falling back to default models.")
-            result = service.process.remote(
-                audio_bytes,
-                system_prompt
+            print(
+                f"⚠️ Error processing request (likely missing API key): {e}. Falling back to default models."
             )
+            result = service.process.remote(audio_bytes, system_prompt)
         audio_out = result["audio"]
         if result.get("compressed"):
             audio_out = decompress_mp3_to_wav(audio_out)
@@ -870,19 +1020,31 @@ if ENABLE_LEGACY_WEB:
             "output_duration": result["metrics"]["output_duration"],
         }
 
+
 @app.function(image=image, timeout=600)
 @modal.fastapi_endpoint(method="POST")
-async def process_web_binary(request):
-    from fastapi import Response
+async def process_web_binary(request: Request):
     import os
+
+    from fastapi import Request, Response
+
     body = await request.body()
     if not body:
-        return Response(content=b"Empty audio", status_code=400, media_type="text/plain")
+        return Response(
+            content=b"Empty audio", status_code=400, media_type="text/plain"
+        )
     content_type = request.headers.get("content-type", "")
     audio_format = (request.headers.get("x-audio-format") or "").lower()
-    is_pcm = audio_format in {"pcm16", "pcm_s16le", "pcm", "raw"} or content_type == "audio/l16"
+    is_pcm = (
+        audio_format in {"pcm16", "pcm_s16le", "pcm", "raw"}
+        or content_type == "audio/l16"
+    )
     if not body.startswith(b"RIFF") and not is_pcm:
-        return Response(content=b"Unsupported audio format", status_code=400, media_type="text/plain")
+        return Response(
+            content=b"Unsupported audio format",
+            status_code=400,
+            media_type="text/plain",
+        )
     sample_rate = int(request.headers.get("x-sample-rate", "16000"))
     channels = int(request.headers.get("x-channels", "1"))
     sample_width = int(request.headers.get("x-sample-width", "2"))
@@ -891,12 +1053,20 @@ async def process_web_binary(request):
     tts_model = request.headers.get("x-tts-model")
     llm_requested = request.headers.get("x-llm-model")
     cfg = ModelConfig()
-    groq_key = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("groq_api_key")
+    groq_key = (
+        os.environ.get("GROQ_API_KEY")
+        or os.environ.get("GROQ_KEY")
+        or os.environ.get("groq_api_key")
+    )
     openai_key = os.environ.get("OPENAI_API_KEY")
     if llm_requested == "gpt4omini":
-        llm_model = "gpt4omini" if openai_key else ("llama31-groq" if groq_key else cfg.llm)
+        llm_model = (
+            "gpt4omini" if openai_key else ("llama31-groq" if groq_key else cfg.llm)
+        )
     elif llm_requested == "llama31-groq":
-        llm_model = "llama31-groq" if groq_key else ("gpt4omini" if openai_key else cfg.llm)
+        llm_model = (
+            "llama31-groq" if groq_key else ("gpt4omini" if openai_key else cfg.llm)
+        )
     else:
         llm_model = llm_requested
     service = SpeechToSpeechService()
@@ -923,25 +1093,38 @@ async def process_web_binary(request):
     audio_out = result.get("audio", b"")
     return Response(content=audio_out, media_type="application/octet-stream")
 
+
 @app.function(image=image, timeout=600)
 @modal.fastapi_endpoint(method="POST")
-async def process_web_stream_binary(request):
-    from fastapi import Response
-    from fastapi.responses import StreamingResponse
+async def process_web_stream_binary(request: Request):
     import struct
+
+    from fastapi import Request, Response
+    from fastapi.responses import StreamingResponse
+
     body = await request.body()
     if not body:
-        return Response(content=b"Empty audio", status_code=400, media_type="text/plain")
+        return Response(
+            content=b"Empty audio", status_code=400, media_type="text/plain"
+        )
     content_type = request.headers.get("content-type", "")
     audio_format = (request.headers.get("x-audio-format") or "").lower()
-    is_pcm = audio_format in {"pcm16", "pcm_s16le", "pcm", "raw"} or content_type == "audio/l16"
+    is_pcm = (
+        audio_format in {"pcm16", "pcm_s16le", "pcm", "raw"}
+        or content_type == "audio/l16"
+    )
     if not body.startswith(b"RIFF") and not is_pcm:
-        return Response(content=b"Unsupported audio format", status_code=400, media_type="text/plain")
+        return Response(
+            content=b"Unsupported audio format",
+            status_code=400,
+            media_type="text/plain",
+        )
     sample_rate = int(request.headers.get("x-sample-rate", "16000"))
     channels = int(request.headers.get("x-channels", "1"))
     sample_width = int(request.headers.get("x-sample-width", "2"))
     system_prompt = request.headers.get("x-system-prompt")
     service = SpeechToSpeechService()
+
     def gen():
         try:
             for chunk in service.process_streaming_raw.remote_gen(
@@ -959,16 +1142,22 @@ async def process_web_stream_binary(request):
             yield struct.pack(">I", 0)
         except Exception:
             yield struct.pack(">I", 0)
+
     return StreamingResponse(gen(), media_type="application/octet-stream")
 
+
 if ENABLE_LEGACY_WEB:
+
     @app.function(image=image, timeout=600)
     @modal.asgi_app()
     def process_web_stream_text():
+        import base64
+        import os
+
         from fastapi import FastAPI, Request, Response
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import StreamingResponse
-        import base64, os
+
         app = FastAPI()
         app.add_middleware(
             CORSMiddleware,
@@ -976,9 +1165,11 @@ if ENABLE_LEGACY_WEB:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
         @app.options("/")
         def _options():
             return Response(status_code=204)
+
         @app.post("/")
         async def _post(request: Request):
             content_type = request.headers.get("content-type", "")
@@ -987,7 +1178,9 @@ if ENABLE_LEGACY_WEB:
             if content_type.startswith("application/json"):
                 try:
                     data = await request.json()
-                    audio_base64 = data.get("audio_base64", "") if isinstance(data, dict) else ""
+                    audio_base64 = (
+                        data.get("audio_base64", "") if isinstance(data, dict) else ""
+                    )
                 except Exception:
                     audio_base64 = ""
             else:
@@ -997,23 +1190,45 @@ if ENABLE_LEGACY_WEB:
                 except Exception:
                     audio_base64 = ""
             if not audio_base64:
-                return StreamingResponse(iter(["Error: No audio data received"]), media_type="text/plain")
+                return StreamingResponse(
+                    iter(["Error: No audio data received"]), media_type="text/plain"
+                )
             try:
                 audio_bytes = base64.b64decode(audio_base64)
             except Exception as e:
-                return StreamingResponse(iter([f"Error: Invalid base64 audio data - {e}"]), media_type="text/plain")
+                return StreamingResponse(
+                    iter([f"Error: Invalid base64 audio data - {e}"]),
+                    media_type="text/plain",
+                )
             cfg = ModelConfig()
-            asr_model = request.headers.get("x-asr-model") or (data.get("asr_model") if isinstance(data, dict) else None)
-            llm_requested = request.headers.get("x-llm-model") or (data.get("llm_model") if isinstance(data, dict) else None)
-            groq_key = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("groq_api_key")
+            asr_model = request.headers.get("x-asr-model") or (
+                data.get("asr_model") if isinstance(data, dict) else None
+            )
+            llm_requested = request.headers.get("x-llm-model") or (
+                data.get("llm_model") if isinstance(data, dict) else None
+            )
+            groq_key = (
+                os.environ.get("GROQ_API_KEY")
+                or os.environ.get("GROQ_KEY")
+                or os.environ.get("groq_api_key")
+            )
             openai_key = os.environ.get("OPENAI_API_KEY")
             if llm_requested == "gpt4omini":
-                llm_model = "gpt4omini" if openai_key else ("llama31-groq" if groq_key else cfg.llm)
+                llm_model = (
+                    "gpt4omini"
+                    if openai_key
+                    else ("llama31-groq" if groq_key else cfg.llm)
+                )
             elif llm_requested == "llama31-groq":
-                llm_model = "llama31-groq" if groq_key else ("gpt4omini" if openai_key else cfg.llm)
+                llm_model = (
+                    "llama31-groq"
+                    if groq_key
+                    else ("gpt4omini" if openai_key else cfg.llm)
+                )
             else:
                 llm_model = llm_requested
             service = SpeechToSpeechService()
+
             def gen():
                 try:
                     asr = service.asr
@@ -1040,8 +1255,11 @@ if ENABLE_LEGACY_WEB:
                         yield token
                 except Exception as e:
                     yield f"\n\nError: {str(e)}"
+
             return StreamingResponse(gen(), media_type="text/plain")
+
         return app
+
 
 # Health check endpoint for keep-alive (prevents cold starts)
 @app.function(image=image)
@@ -1049,4 +1267,5 @@ if ENABLE_LEGACY_WEB:
 def health():
     """Health check endpoint - ping every 30s to keep container warm."""
     import time
+
     return {"status": "warm", "timestamp": time.time()}
