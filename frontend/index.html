@@ -585,7 +585,7 @@
                     if (useBinary) {
                         const wavPayload =
                             await blobToWavArrayBuffer(recordedBlob);
-                        response = await fetch(PROCESS_URL, {
+                        const streamResponse = await fetch(STREAM_TEXT_URL, {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/octet-stream",
@@ -598,6 +598,41 @@
                             },
                             body: wavPayload.buffer,
                         });
+
+                        const clientTime = (Date.now() - startTime) / 1000;
+
+                        if (!streamResponse.ok) {
+                            throw new Error(
+                                `HTTP ${streamResponse.status}: ${await streamResponse.text()}`,
+                            );
+                        }
+
+                        await streamBinaryAudio(streamResponse);
+
+                        const audioPlayer =
+                            document.getElementById("audioPlayer");
+                        audioPlayer.src = "";
+
+                        document.getElementById("totalTime").textContent =
+                            formatMetric(clientTime);
+                        document.getElementById("asrTime").textContent =
+                            formatMetric(0);
+                        document.getElementById("llmTime").textContent =
+                            formatMetric(0);
+                        document.getElementById("ttsTime").textContent =
+                            formatMetric(0);
+
+                        document.getElementById("transcription").textContent =
+                            "...";
+                        document.getElementById("response").textContent = "...";
+                        document.getElementById(
+                            "latencyBreakdownSection",
+                        ).style.display = "none";
+
+                        status.textContent = "✅ Processing complete";
+                        status.className = "status";
+                        results.classList.add("show");
+                        return;
                     } else {
                         response = await fetch(PROCESS_URL, {
                             method: "POST",
@@ -612,43 +647,6 @@
                         throw new Error(
                             `HTTP ${response.status}: ${await response.text()}`,
                         );
-                    }
-
-                    if (useBinary) {
-                        const audioBuffer = await response.arrayBuffer();
-                        const audioBlob = new Blob([audioBuffer], {
-                            type: "audio/wav",
-                        });
-                        const audioUrl = URL.createObjectURL(audioBlob);
-                        const audioPlayer =
-                            document.getElementById("audioPlayer");
-                        audioPlayer.src = audioUrl;
-
-                        const playAudio = async () => {
-                            try {
-                                await audioPlayer.play();
-                            } catch (e) {
-                                status.innerHTML =
-                                    "✅ Complete! <small>(Tap play to listen)</small>";
-                            }
-                        };
-
-                        audioPlayer.onloadeddata = playAudio;
-                        if (audioPlayer.readyState >= 3) {
-                            playAudio();
-                        }
-
-                        document.getElementById("transcription").textContent =
-                            "...";
-                        document.getElementById("response").textContent = "...";
-                        document.getElementById(
-                            "latencyBreakdownSection",
-                        ).style.display = "none";
-
-                        status.textContent = "✅ Processing complete";
-                        status.className = "status";
-                        results.classList.add("show");
-                        return;
                     }
 
                     const data = await response.json();
@@ -810,6 +808,97 @@
                     processBtn.disabled = false;
                 }
             });
+
+            let sharedAudioContext = null;
+
+            function getAudioContext() {
+                if (!sharedAudioContext) {
+                    sharedAudioContext = new (
+                        window.AudioContext || window.webkitAudioContext
+                    )();
+                }
+                return sharedAudioContext;
+            }
+
+            async function streamBinaryAudio(response) {
+                if (!response.body) {
+                    return;
+                }
+
+                const reader = response.body.getReader();
+                let buffer = new Uint8Array(0);
+                const audioCtx = getAudioContext();
+                if (audioCtx.state === "suspended") {
+                    await audioCtx.resume();
+                }
+                let nextTime = audioCtx.currentTime + 0.05;
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    if (value && value.length) {
+                        buffer = concatUint8(buffer, value);
+                    }
+
+                    const parsed = readFramesFromBuffer(buffer);
+                    buffer = parsed.remaining;
+
+                    for (const frame of parsed.frames) {
+                        nextTime = await playWavFrame(
+                            audioCtx,
+                            frame,
+                            nextTime,
+                        );
+                    }
+
+                    if (parsed.done) {
+                        break;
+                    }
+                }
+            }
+
+            function concatUint8(a, b) {
+                const result = new Uint8Array(a.length + b.length);
+                result.set(a, 0);
+                result.set(b, a.length);
+                return result;
+            }
+
+            function readFramesFromBuffer(buffer) {
+                const frames = [];
+                let offset = 0;
+                let done = false;
+
+                while (buffer.length - offset >= 4) {
+                    const length =
+                        (buffer[offset] << 24) |
+                        (buffer[offset + 1] << 16) |
+                        (buffer[offset + 2] << 8) |
+                        buffer[offset + 3];
+                    if (length === 0) {
+                        done = true;
+                        offset += 4;
+                        break;
+                    }
+                    if (buffer.length - offset - 4 < length) {
+                        break;
+                    }
+                    const frame = buffer.slice(offset + 4, offset + 4 + length);
+                    frames.push(frame.buffer);
+                    offset += 4 + length;
+                }
+
+                return { frames, remaining: buffer.slice(offset), done };
+            }
+
+            async function playWavFrame(audioCtx, frame, startTime) {
+                const audioBuffer = await audioCtx.decodeAudioData(frame);
+                const source = audioCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioCtx.destination);
+                source.start(startTime);
+                return startTime + audioBuffer.duration;
+            }
 
             async function blobToWavArrayBuffer(blob) {
                 const arrayBuffer = await blob.arrayBuffer();
