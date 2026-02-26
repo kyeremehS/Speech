@@ -2,7 +2,7 @@
 
 Production-ready speech-to-speech system on Modal with **TRUE STREAMING** for sub-2s first-audio latency. Takes audio, transcribes it, generates a response, and synthesizes speech—all in-memory, GPU-accelerated.
 
-**Audio** → **ASR** → **Text** → **LLM (streaming)** → **Sentence Chunker** → **TTS** → **Audio**
+**Audio** → **ASR** → **Text** → **LLM (streaming)** → **Sentence Chunker** → **TTS (streaming when available)** → **Audio**
 
 ## Key Features
 
@@ -40,11 +40,7 @@ Production-ready speech-to-speech system on Modal with **TRUE STREAMING** for su
 
 ## Models
 
-| Component | Model | Provider | Size |
-|-----------|-------|----------|------|
-| **ASR** | nvidia/nemotron-speech-streaming-en-0.6b | NeMo | 600M params |
-| **LLM** | microsoft/Phi-3-mini-4k-instruct | Hugging Face | 3.8B params |
-| **TTS** | ChatterboxTTS (turbo) | Hugging Face | ~250M params |
+Default models are configurable via environment variables, and you can swap in any registered implementation.
 
 ## Quick Start
 
@@ -55,35 +51,26 @@ pip install -r requirements.txt
 modal token new  # Authenticate with Modal
 ```
 
-### 2. Test Locally
-
-```bash
-# Local testing with your own WAV file
-modal run modular_main.py --audio-path input.wav
-```
-
-Output: `output.wav`
-
-### 3. Deploy to Modal (Default Models)
+### 2. Deploy to Modal (Default Models)
 
 ```bash
 # Deploy with default models (NeMo ASR, Phi3 LLM, ParlerTTS)
-modal deploy modular_main.py
+modal deploy main.py
 ```
 
-### 4. Deploy with Custom Models
+### 3. Deploy with Custom Models
 
 ```bash
 # Deploy with custom models via environment variables
-$env:ASR_MODEL="nemo"; $env:LLM_MODEL="phi3"; $env:TTS_MODEL="chatterbox"; modal deploy modular_main.py
+$env:ASR_MODEL="nemo"; $env:LLM_MODEL="phi3"; $env:TTS_MODEL="parler"; modal deploy main.py
 ```
 
 Supported models:
 - **ASR**: `nemo`, `whisper`, `faster-whisper`
 - **LLM**: `phi3`, `llama`, `gpt4omini`, `llama31-groq`, `qwen3`
-- **TTS**: `chatterbox`, `parler`, `vibevoice`, `orpheus`,`inworld-tts-1.5-max`
+- **TTS**: `chatterbox`, `parler`, `vibevoice`, `orpheus`, `inworld-tts-1.5-max`, `inworld-tts-1.5-mini`
 
-### 5. Use Real-Time Client
+### 4. Use Real-Time Client
 
 ```bash
 # STREAMING MODE (recommended) - sub-2s first audio latency
@@ -100,7 +87,7 @@ Features:
 - Compression for optimized network transfer
 - Session metrics tracking (latency, throughput)
 
-### 6. Call Deployed Service Programmatically
+### 5. Call Deployed Service Programmatically
 
 ```python
 from modal import Function
@@ -129,7 +116,7 @@ for chunk in stream_func.remote_gen(compressed):
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│      Modal App: speech-to-speech (Modular)          │
+│      Modal App: speech-to-speech (main.py)          │
 └─────────────────────────────────────────────────────┘
 
           ┌────────────────────────────────────────┐
@@ -150,9 +137,10 @@ for chunk in stream_func.remote_gen(compressed):
    │          │      │          │      │          │
    │ Concrete │      │ Concrete │      │ Concrete │
    │ Models:  │      │ Models:  │      │ Models:  │
-   │ NeMo     │      │ Phi3     │      │Chatterbox│
-   │ Whisper  │      │ Llama    │      │          │
-   │          │      │ GPT4Mini │      │          │
+   │ NeMo     │      │ Phi3     │      │ Chatterbox│
+   │ Whisper  │      │ Llama    │      │ Parler    │
+   │ Faster-  │      │ GPT4oMini│      │ Inworld   │
+   │ Whisper  │      │ Qwen3    │      │ Orpheus   │
    └──────────┘      └──────────┘      └──────────┘
    GPU A10G          GPU A10G          GPU A10G
    @modal.method()   @modal.method()   @modal.method()
@@ -171,6 +159,8 @@ Each component (ASR, LLM, TTS) is built on abstract base classes:
 3. Register it: `@register_model("asr", "my_model")`
 
 ### Data Flow
+
+Input can be WAV or MP3. Streaming responses yield audio chunks as soon as they are synthesized, and large chunks may be MP3-compressed to reduce transfer size.
 
 ```
 Client (WAV)
@@ -217,31 +207,31 @@ Client (MP3)                                        │
 
 | File | Purpose |
 |------|---------|
-| `modular_main.py` | **Main entry point** - Modular implementation with model registry |
-| `client.py` | Real-time client with VAD, compression, metrics tracking |
-| `main.py` | Monolithic implementation (single container) |
-| `audio_compression.py` | WAV↔MP3 compression utilities for network optimization |
+| `main.py` | **Main entry point** - Modal app with model registry and pipeline |
+| `helper/client.py` | Real-time client with VAD, compression, metrics tracking |
+| `helper/utility.py` | WAV↔MP3 compression and audio normalization |
+| `helper/audio_compression.py` | Optional compression utilities (MP3/PCM helpers) |
 | `requirements.txt` | Python dependencies |
-| `test_compression.py` | Unit tests for audio compression |
+| `helper/test_compression.py` | Unit tests for audio compression |
 
 ## Environment Variables
 
 Control model selection without code changes:
 
 ```bash
-# ASR Models: nemo (default), whisper
+# ASR Models: nemo (default), whisper, faster-whisper
 ASR_MODEL=nemo
 
-# LLM Models: phi3 (default), llama, gpt4omini
+# LLM Models: phi3 (default), llama, gpt4omini, llama31-groq, qwen3
 LLM_MODEL=phi3
 
-# TTS Models: chatterbox (default)
-TTS_MODEL=chatterbox
+# TTS Models: parler (default), chatterbox, vibevoice, orpheus, inworld-tts-1.5-max, inworld-tts-1.5-mini
+TTS_MODEL=parler
 ```
 
 Example:
 ```bash
-$env:ASR_MODEL="whisper"; $env:LLM_MODEL="llama"; modal deploy modular_main.py
+$env:ASR_MODEL="whisper"; $env:LLM_MODEL="llama"; modal deploy main.py
 ```
 
 ## Metrics & Performance
@@ -348,10 +338,10 @@ $env:ASR_MODEL="whisper"; modal deploy modular_main.py
 
 ```bash
 # Unit tests for audio compression
-pytest test_compression.py -v
+pytest helper/test_compression.py -v
 
 # Local testing with your audio
-modal run modular_main.py --audio-path input.wav
+python helper/client.py --streaming
 
 # Test deployed service
 python client.py
@@ -361,7 +351,7 @@ python client.py
 
 ```bash
 # Local execution
-modal logs modular_main.py
+modal logs main.py
 
 # Deployed service
 modal app logs speech-to-speech
