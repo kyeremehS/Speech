@@ -15,6 +15,7 @@
                 --accent: #38bdf8;
                 --success: #4ade80;
                 --error: #ef4444;
+                --warning: #fbbf24;
             }
 
             * {
@@ -122,22 +123,6 @@
                 gap: 8px;
             }
 
-            .current-config {
-                display: flex;
-                gap: 12px;
-                flex-wrap: wrap;
-            }
-
-            .config-badge {
-                background: rgba(56, 189, 248, 0.1);
-                border: 1px solid rgba(56, 189, 248, 0.2);
-                padding: 6px 16px;
-                border-radius: 100px;
-                font-size: 0.85rem;
-                color: var(--accent);
-                font-weight: 500;
-            }
-
             .btn {
                 background: linear-gradient(
                     135deg,
@@ -242,28 +227,32 @@
 
             .timing {
                 display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                gap: 12px;
+                grid-template-columns: repeat(5, 1fr);
+                gap: 10px;
                 margin-bottom: 24px;
             }
 
             .timing-item {
                 background: rgba(0, 0, 0, 0.2);
-                padding: 16px;
+                padding: 14px 8px;
                 border-radius: 12px;
                 text-align: center;
                 border: 1px solid rgba(255, 255, 255, 0.05);
             }
 
             .timing-item .value {
-                font-size: 1.4rem;
+                font-size: 1.2rem;
                 font-weight: 700;
                 color: var(--success);
                 font-feature-settings: "tnum";
             }
 
+            .timing-item .value.fast { color: var(--success); }
+            .timing-item .value.medium { color: var(--warning); }
+            .timing-item .value.slow { color: var(--error); }
+
             .timing-item .label {
-                font-size: 0.75rem;
+                font-size: 0.7rem;
                 color: var(--text-muted);
                 margin-top: 4px;
                 text-transform: uppercase;
@@ -338,9 +327,22 @@
                 text-align: center;
             }
 
+            .live-text {
+                color: var(--text-muted);
+                font-style: italic;
+                font-size: 0.9rem;
+                min-height: 24px;
+                transition: color 0.2s;
+            }
+
+            .live-text.active {
+                color: var(--text-main);
+                font-style: normal;
+            }
+
             @media (max-width: 600px) {
                 .timing {
-                    grid-template-columns: repeat(2, 1fr);
+                    grid-template-columns: repeat(3, 1fr);
                 }
                 .container {
                     padding: 24px;
@@ -387,6 +389,10 @@
 
                 <div class="timing">
                     <div class="timing-item">
+                        <div class="value" id="ttfaTime">–</div>
+                        <div class="label">TTFA</div>
+                    </div>
+                    <div class="timing-item">
                         <div class="value" id="totalTime">0.00s</div>
                         <div class="label">Total</div>
                     </div>
@@ -411,7 +417,7 @@
 
                 <div class="result-item">
                     <label>AI Response:</label>
-                    <p id="response">...</p>
+                    <p id="response" class="live-text">...</p>
                 </div>
 
                 <div class="result-item">
@@ -467,9 +473,12 @@
                 : "https://lazy-chat--speech-to-speech-process-web.modal.run";
             const MODELS_URL =
                 "https://lazy-chat--speech-to-speech-get-models.modal.run";
-            const STREAM_TEXT_URL = USE_BINARY_TRANSPORT
-                ? "https://lazy-chat--speech-to-speech-process-web-stream-binary.modal.run"
-                : "https://lazy-chat--speech-to-speech-process-web-stream-text.modal.run";
+            const STREAM_URL =
+                "https://lazy-chat--speech-to-speech-process-web-stream-binary.modal.run";
+
+            // Frame type constants (match backend)
+            const FRAME_TYPE_AUDIO = 0x01;
+            const FRAME_TYPE_META = 0x02;
 
             // Elements
             const recordBtn = document.getElementById("recordBtn");
@@ -493,6 +502,14 @@
                 if (!text || text === "undefined") return "...";
                 return text;
             };
+
+            // Color-code a timing value
+            function colorTTFA(el, seconds) {
+                el.classList.remove("fast", "medium", "slow");
+                if (seconds < 1.0) el.classList.add("fast");
+                else if (seconds < 2.0) el.classList.add("medium");
+                else el.classList.add("slow");
+            }
 
             recordBtn.addEventListener("click", async () => {
                 if (mediaRecorder && mediaRecorder.state === "recording") {
@@ -548,44 +565,30 @@
                 status.className = "status processing";
                 results.classList.remove("show");
 
+                // Reset display
+                document.getElementById("ttfaTime").textContent = "–";
+                document.getElementById("totalTime").textContent = "0.00s";
+                document.getElementById("asrTime").textContent = "0.00s";
+                document.getElementById("llmTime").textContent = "0.00s";
+                document.getElementById("ttsTime").textContent = "0.00s";
+                document.getElementById("transcription").textContent = "...";
+                const responseEl = document.getElementById("response");
+                responseEl.textContent = "...";
+                responseEl.className = "live-text";
+                document.getElementById("latencyBreakdownSection").style.display = "none";
+
                 try {
                     const startTime = Date.now();
-                    const useBinary = USE_BINARY_TRANSPORT;
 
-                    let base64Audio = null;
-                    if (!useBinary) {
-                        base64Audio = await blobToBase64(recordedBlob);
-                        const streaming = fetch(STREAM_TEXT_URL, {
-                            method: "POST",
-                            headers: { "Content-Type": "text/plain" },
-                            body: base64Audio,
-                        });
-                        (async () => {
-                            try {
-                                const res = await streaming;
-                                if (res.ok && res.body) {
-                                    const reader = res.body.getReader();
-                                    const decoder = new TextDecoder();
-                                    let text = "";
-                                    while (true) {
-                                        const { done, value } =
-                                            await reader.read();
-                                        if (done) break;
-                                        text += decoder.decode(value);
-                                        document.getElementById(
-                                            "response",
-                                        ).textContent = formatText(text);
-                                    }
-                                }
-                            } catch (e) {}
-                        })();
-                    }
-
-                    let response;
-                    if (useBinary) {
+                    if (USE_BINARY_TRANSPORT) {
                         const wavPayload =
                             await blobToWavArrayBuffer(recordedBlob);
-                        const streamResponse = await fetch(STREAM_TEXT_URL, {
+
+                        status.innerHTML =
+                            '<span class="spinner"></span> Streaming...';
+                        results.classList.add("show");
+
+                        const streamResponse = await fetch(STREAM_URL, {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/octet-stream",
@@ -599,207 +602,114 @@
                             body: wavPayload.buffer,
                         });
 
-                        const clientTime = (Date.now() - startTime) / 1000;
-
                         if (!streamResponse.ok) {
                             throw new Error(
                                 `HTTP ${streamResponse.status}: ${await streamResponse.text()}`,
                             );
                         }
 
-                        await streamBinaryAudio(streamResponse);
+                        const streamResult = await streamBinaryAudio(streamResponse, startTime);
+                        const clientTime = (Date.now() - startTime) / 1000;
 
-                        const audioPlayer =
-                            document.getElementById("audioPlayer");
-                        audioPlayer.src = "";
-
+                        // Update metrics from stream result
                         document.getElementById("totalTime").textContent =
                             formatMetric(clientTime);
-                        document.getElementById("asrTime").textContent =
-                            formatMetric(0);
-                        document.getElementById("llmTime").textContent =
-                            formatMetric(0);
-                        document.getElementById("ttsTime").textContent =
-                            formatMetric(0);
 
-                        document.getElementById("transcription").textContent =
-                            "...";
-                        document.getElementById("response").textContent = "...";
-                        document.getElementById(
-                            "latencyBreakdownSection",
-                        ).style.display = "none";
+                        if (streamResult.metrics) {
+                            const m = streamResult.metrics;
+                            document.getElementById("asrTime").textContent =
+                                formatMetric(m.asr_time);
+                            document.getElementById("llmTime").textContent =
+                                formatMetric(m.llm_time);
+                            document.getElementById("ttsTime").textContent =
+                                formatMetric(m.tts_time);
+
+                            // Detailed breakdown
+                            const asr = m.asr_time || 0;
+                            const llm = m.llm_time || 0;
+                            const tts = m.tts_time || 0;
+                            const pipeline = m.total_time || 0.001;
+                            const output_dur = m.output_duration || 0;
+                            const getPct = (val) =>
+                                ((val / pipeline) * 100).toFixed(1) + "%";
+                            const rtf = clientTime > 0 ? (output_dur / clientTime).toFixed(2) : "0.00";
+
+                            const latencyRows = [
+                                ["ASR", formatMetric(asr), getPct(asr), "Speech → Text"],
+                                ["LLM", formatMetric(llm), getPct(llm), "Text Gen"],
+                                ["TTS", formatMetric(tts), getPct(tts), `Text → ${output_dur.toFixed(1)}s Audio`],
+                                ["TTFA", formatMetric(streamResult.ttfa), "-", "Time to First Audio"],
+                                ["Pipeline", formatMetric(pipeline), "100%", "Server Processing"],
+                                ["End-to-End", formatMetric(clientTime), "-", "Total Latency"],
+                            ];
+
+                            const tbody = document.querySelector("#latencyBreakdown tbody");
+                            tbody.innerHTML = "";
+                            latencyRows.forEach((row) => {
+                                const tr = document.createElement("tr");
+                                row.forEach((cell) => {
+                                    const td = document.createElement("td");
+                                    td.textContent = cell;
+                                    tr.appendChild(td);
+                                });
+                                tbody.appendChild(tr);
+                            });
+                            document.getElementById("latencyBreakdownSection").style.display = "block";
+                            document.getElementById("rtfThroughput").innerHTML =
+                                `Throughput: <b>${rtf}x</b> realtime &nbsp;|&nbsp; Chunks: <b>${streamResult.audioChunks}</b>`;
+                        }
+
+                        if (streamResult.response) {
+                            responseEl.textContent = streamResult.response;
+                            responseEl.className = "live-text active";
+                        }
 
                         status.textContent = "✅ Processing complete";
                         status.className = "status";
-                        results.classList.add("show");
-                        return;
                     } else {
-                        response = await fetch(PROCESS_URL, {
+                        // Legacy JSON path
+                        const base64Audio = await blobToBase64(recordedBlob);
+                        const response = await fetch(PROCESS_URL, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ audio_base64: base64Audio }),
                         });
-                    }
 
-                    const clientTime = (Date.now() - startTime) / 1000;
+                        const clientTime = (Date.now() - startTime) / 1000;
 
-                    if (!response.ok) {
-                        throw new Error(
-                            `HTTP ${response.status}: ${await response.text()}`,
-                        );
-                    }
+                        if (!response.ok) {
+                            throw new Error(
+                                `HTTP ${response.status}: ${await response.text()}`,
+                            );
+                        }
 
-                    const data = await response.json();
-                    console.log("Response data:", data); // Debug logging
+                        const data = await response.json();
+                        const metrics = data.metrics || {};
 
-                    // Handle both nested metrics and flat structure
-                    const metrics = data.metrics || {
-                        asr_time: data.asr_time,
-                        llm_time: data.llm_time,
-                        tts_time: data.tts_time,
-                        total_time: data.total_time,
-                        total_pipeline: data.total_pipeline || data.total_time,
-                        input_duration: data.input_duration,
-                        output_duration: data.output_duration,
-                    };
+                        document.getElementById("totalTime").textContent =
+                            formatMetric(clientTime);
+                        document.getElementById("asrTime").textContent =
+                            formatMetric(metrics.asr_time);
+                        document.getElementById("llmTime").textContent =
+                            formatMetric(metrics.llm_time);
+                        document.getElementById("ttsTime").textContent =
+                            formatMetric(metrics.tts_time);
 
-                    // Update UI safely
-                    document.getElementById("totalTime").textContent =
-                        formatMetric(clientTime);
-                    document.getElementById("asrTime").textContent =
-                        formatMetric(metrics.asr_time);
-                    document.getElementById("llmTime").textContent =
-                        formatMetric(metrics.llm_time);
-                    document.getElementById("ttsTime").textContent =
-                        formatMetric(metrics.tts_time);
+                        document.getElementById("transcription").textContent =
+                            formatText(data.transcription);
+                        responseEl.textContent = formatText(data.response);
+                        responseEl.className = "live-text active";
 
-                    document.getElementById("transcription").textContent =
-                        formatText(data.transcription);
-                    document.getElementById("response").textContent =
-                        formatText(data.response);
-
-                    // Detailed breakdown
-                    const asr = metrics.asr_time || 0;
-                    const llm = metrics.llm_time || 0;
-                    const tts = metrics.tts_time || 0;
-                    const pipeline =
-                        metrics.total_pipeline || metrics.total_time || 0.001;
-                    const input_dur = metrics.input_duration || 0;
-                    const output_dur = metrics.output_duration || 0;
-
-                    // Calculate safe percentages
-                    const getPct = (val) =>
-                        ((val / pipeline) * 100).toFixed(1) + "%";
-
-                    const rtf =
-                        input_dur > 0
-                            ? (clientTime / input_dur).toFixed(2)
-                            : "0.00";
-                    const throughput =
-                        clientTime > 0
-                            ? (output_dur / clientTime).toFixed(2)
-                            : "0.00";
-
-                    const latencyRows = [
-                        [
-                            "Recording",
-                            "-",
-                            "-",
-                            `${input_dur.toFixed(1)}s captured`,
-                        ],
-                        [
-                            "ASR",
-                            formatMetric(asr),
-                            getPct(asr),
-                            "Speech → Text",
-                        ],
-                        ["LLM", formatMetric(llm), getPct(llm), "Text Gen"],
-                        [
-                            "TTS",
-                            formatMetric(tts),
-                            getPct(tts),
-                            `Text → ${output_dur.toFixed(1)}s Audio`,
-                        ],
-                        [
-                            "Pipeline Total",
-                            formatMetric(pipeline),
-                            "100%",
-                            "Server Processing",
-                        ],
-                        [
-                            "End-to-End",
-                            formatMetric(clientTime),
-                            "-",
-                            "Total Latency",
-                        ],
-                    ];
-
-                    const tbody = document.querySelector(
-                        "#latencyBreakdown tbody",
-                    );
-                    tbody.innerHTML = "";
-                    latencyRows.forEach((row, i) => {
-                        const tr = document.createElement("tr");
-                        row.forEach((cell) => {
-                            const td = document.createElement("td");
-                            td.textContent = cell;
-                            tr.appendChild(td);
-                        });
-                        tbody.appendChild(tr);
-                    });
-
-                    document.getElementById(
-                        "latencyBreakdownSection",
-                    ).style.display = "block";
-                    document.getElementById("rtfThroughput").innerHTML =
-                        `Real-Time Factor: <b>${rtf}x</b> &nbsp;|&nbsp; Throughput: <b>${throughput}x</b> realtime`;
-
-                    // Audio Handling - backend returns audio_base64 as WAV
-                    const audioData = data.audio_base64 || data.audio;
-                    console.log(
-                        "Audio data received:",
-                        audioData ? `${audioData.length} chars` : "NONE",
-                    );
-
-                    if (audioData) {
-                        console.log("Creating audio blob...");
-                        const audioBlob = base64ToBlob(audioData, "audio/wav");
-                        console.log("Audio blob size:", audioBlob.size);
-                        const audioUrl = URL.createObjectURL(audioBlob);
-                        const audioPlayer =
-                            document.getElementById("audioPlayer");
-                        audioPlayer.src = audioUrl;
-
-                        // Robust auto-play
-                        const playAudio = async () => {
-                            try {
-                                await audioPlayer.play();
-                                console.log("Audio playing");
-                            } catch (e) {
-                                console.warn("Auto-play blocked:", e);
-                                status.innerHTML =
-                                    "✅ Complete! <small>(Tap play to listen)</small>";
-                            }
-                        };
-
-                        audioPlayer.onloadeddata = playAudio;
-                        // Fallback if already loaded
-                        if (audioPlayer.readyState >= 3) {
-                            playAudio();
+                        const audioData = data.audio_base64 || data.audio;
+                        if (audioData) {
+                            const audioBlob = base64ToBlob(audioData, "audio/wav");
+                            const audioUrl = URL.createObjectURL(audioBlob);
+                            document.getElementById("audioPlayer").src = audioUrl;
                         }
 
                         status.textContent = "✅ Processing complete";
                         status.className = "status";
                         results.classList.add("show");
-                    } else {
-                        console.error("No audio in response", data);
-                        status.textContent =
-                            "⚠️ Response received but no audio";
-                        status.className = "status";
-                        // Still show results if text is there
-                        if (data.response) {
-                            results.classList.add("show");
-                        }
                     }
                 } catch (error) {
                     status.innerHTML = `<div class="error-msg">❌ Error: ${error.message}</div>`;
@@ -808,6 +718,10 @@
                     processBtn.disabled = false;
                 }
             });
+
+            // ---------------------------------------------------------------
+            // Binary streaming with typed frame protocol
+            // ---------------------------------------------------------------
 
             let sharedAudioContext = null;
 
@@ -820,10 +734,28 @@
                 return sharedAudioContext;
             }
 
-            async function streamBinaryAudio(response) {
-                if (!response.body) {
-                    return;
-                }
+            /**
+             * Stream binary audio with auto-detecting frame protocol.
+             *
+             * Supports BOTH:
+             *   OLD: [4-byte length][WAV payload]
+             *   NEW: [4-byte length][1-byte type][payload]
+             *     type 0x01 = WAV audio, 0x02 = JSON metadata
+             * Sentinel: 4 zero bytes
+             *
+             * Returns: { ttfa, metrics, response, transcription, audioChunks }
+             */
+            async function streamBinaryAudio(response, startTime) {
+                const result = {
+                    ttfa: null,
+                    metrics: null,
+                    response: "",
+                    transcription: "",
+                    audioChunks: 0,
+                    responseChunks: [],
+                };
+
+                if (!response.body) return result;
 
                 const reader = response.body.getReader();
                 let buffer = new Uint8Array(0);
@@ -833,38 +765,105 @@
                 }
                 let nextTime = audioCtx.currentTime + 0.05;
 
+                const statusEl = document.getElementById("status");
+                const responseEl = document.getElementById("response");
+                const ttfaEl = document.getElementById("ttfaTime");
+
+                console.log("[stream] Starting binary stream...");
+
                 while (true) {
                     const { value, done } = await reader.read();
-                    if (done) break;
+                    if (done) {
+                        console.log("[stream] Reader done");
+                        break;
+                    }
                     if (value && value.length) {
                         buffer = concatUint8(buffer, value);
                     }
 
-                    const parsed = readFramesFromBuffer(buffer);
+                    const parsed = parseFrames(buffer);
                     buffer = parsed.remaining;
 
                     for (const frame of parsed.frames) {
-                        nextTime = await playWavFrame(
-                            audioCtx,
-                            frame,
-                            nextTime,
-                        );
+                        if (frame.type === "audio") {
+                            // First audio — record TTFA
+                            if (result.ttfa === null) {
+                                result.ttfa = (Date.now() - startTime) / 1000;
+                                ttfaEl.textContent = formatMetric(result.ttfa);
+                                colorTTFA(ttfaEl, result.ttfa);
+                                console.log(`[stream] ⚡ TTFA: ${result.ttfa.toFixed(2)}s`);
+                            }
+                            result.audioChunks++;
+                            statusEl.innerHTML =
+                                `<span class="spinner"></span> Playing chunk ${result.audioChunks}...`;
+
+                            // Get a proper ArrayBuffer for decodeAudioData
+                            const ab = frame.data.buffer.slice(
+                                frame.data.byteOffset,
+                                frame.data.byteOffset + frame.data.byteLength
+                            );
+                            nextTime = await playWavFrame(audioCtx, ab, nextTime);
+                        } else if (frame.type === "meta") {
+                            const text = new TextDecoder().decode(frame.data);
+                            try {
+                                const meta = JSON.parse(text);
+                                console.log("[stream] Meta:", meta.type, meta);
+                                handleMetaFrame(meta, result);
+                            } catch (e) {
+                                console.warn("[stream] Bad meta frame:", e, text);
+                            }
+                        }
                     }
 
                     if (parsed.done) {
+                        console.log("[stream] Sentinel reached");
                         break;
                     }
                 }
-            }
 
-            function concatUint8(a, b) {
-                const result = new Uint8Array(a.length + b.length);
-                result.set(a, 0);
-                result.set(b, a.length);
+                console.log("[stream] Complete:", result.audioChunks, "chunks,", 
+                    "TTFA:", result.ttfa, "metrics:", result.metrics);
                 return result;
             }
 
-            function readFramesFromBuffer(buffer) {
+            /**
+             * Handle a metadata JSON frame from the stream.
+             */
+            function handleMetaFrame(meta, result) {
+                const responseEl = document.getElementById("response");
+
+                if (meta.type === "transcription") {
+                    result.transcription = meta.transcription || "";
+                    document.getElementById("transcription").textContent =
+                        result.transcription;
+                    document.getElementById("asrTime").textContent =
+                        formatMetric(meta.asr_time);
+                } else if (meta.type === "text") {
+                    // Live response text as chunks arrive
+                    result.responseChunks.push(meta.text);
+                    responseEl.textContent = result.responseChunks.join(" ");
+                    responseEl.className = "live-text active";
+                } else if (meta.type === "done") {
+                    result.response = meta.response || result.responseChunks.join(" ");
+                    result.metrics = meta.metrics || null;
+                    responseEl.textContent = result.response;
+                    responseEl.className = "live-text active";
+                } else if (meta.type === "error") {
+                    document.getElementById("status").innerHTML =
+                        `<div class="error-msg">❌ ${meta.error}</div>`;
+                }
+            }
+
+            /**
+             * Auto-detecting frame parser.
+             *
+             * Detects protocol by inspecting the byte AFTER the 4-byte length:
+             *   0x01/0x02 = NEW typed protocol (type + payload)
+             *   0x52 ('R') or other = OLD protocol (raw WAV, starts with "RIFF")
+             *
+             * Returns: { frames: [{type: "audio"|"meta", data: Uint8Array}], remaining, done }
+             */
+            function parseFrames(buffer) {
                 const frames = [];
                 let offset = 0;
                 let done = false;
@@ -875,34 +874,77 @@
                         (buffer[offset + 1] << 16) |
                         (buffer[offset + 2] << 8) |
                         buffer[offset + 3];
+
+                    // Sentinel (end of stream)
                     if (length === 0) {
                         done = true;
                         offset += 4;
                         break;
                     }
+
+                    // Sanity check: length shouldn't be absurdly large
+                    if (length > 10 * 1024 * 1024) {
+                        console.error("[parseFrames] Absurd length:", length, "at offset", offset);
+                        done = true;
+                        break;
+                    }
+
+                    // Need full frame data
                     if (buffer.length - offset - 4 < length) {
                         break;
                     }
-                    const frame = buffer.slice(offset + 4, offset + 4 + length);
-                    frames.push(frame.buffer);
+
+                    // Auto-detect: peek at first byte of payload
+                    const firstByte = buffer[offset + 4];
+
+                    if (firstByte === FRAME_TYPE_AUDIO) {
+                        // NEW typed frame: type=0x01 (audio)
+                        const data = buffer.slice(offset + 5, offset + 4 + length);
+                        frames.push({ type: "audio", data });
+                    } else if (firstByte === FRAME_TYPE_META) {
+                        // NEW typed frame: type=0x02 (metadata)
+                        const data = buffer.slice(offset + 5, offset + 4 + length);
+                        frames.push({ type: "meta", data });
+                    } else {
+                        // OLD untyped frame: entire payload is WAV audio
+                        const data = buffer.slice(offset + 4, offset + 4 + length);
+                        frames.push({ type: "audio", data });
+                    }
+
                     offset += 4 + length;
                 }
 
                 return { frames, remaining: buffer.slice(offset), done };
             }
 
-            async function playWavFrame(audioCtx, frame, startTime) {
-                const audioBuffer = await audioCtx.decodeAudioData(frame);
-                const source = audioCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioCtx.destination);
-                const safeStart = Math.max(
-                    startTime,
-                    audioCtx.currentTime + 0.02,
-                );
-                source.start(safeStart);
-                return safeStart + audioBuffer.duration;
+            function concatUint8(a, b) {
+                const result = new Uint8Array(a.length + b.length);
+                result.set(a, 0);
+                result.set(b, a.length);
+                return result;
             }
+
+            async function playWavFrame(audioCtx, frame, startTime) {
+                try {
+                    const audioBuffer = await audioCtx.decodeAudioData(frame);
+                    const source = audioCtx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioCtx.destination);
+                    const safeStart = Math.max(
+                        startTime,
+                        audioCtx.currentTime + 0.02,
+                    );
+                    source.start(safeStart);
+                    return safeStart + audioBuffer.duration;
+                } catch (e) {
+                    console.warn("Could not decode audio frame:", e);
+                    return startTime;
+                }
+            }
+
+            // ---------------------------------------------------------------
+            // Audio conversion utilities
+            // ---------------------------------------------------------------
 
             async function blobToWavArrayBuffer(blob) {
                 const arrayBuffer = await blob.arrayBuffer();

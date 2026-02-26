@@ -810,10 +810,25 @@ async def process_web_binary(request: Request):
 @app.function(image=image, timeout=600)
 @modal.fastapi_endpoint(method="POST")
 async def process_web_stream_binary(request: Request):
+    """
+    Binary streaming endpoint with typed frame protocol.
+
+    Frame format: [4-byte big-endian length][1-byte type][payload]
+        type 0x01 = WAV audio chunk
+        type 0x02 = JSON metadata (transcription, text, metrics)
+    Sentinel: 4 zero bytes (end of stream)
+
+    NOTE: Audio is WAV-wrapped (not raw PCM) because browser
+    decodeAudioData() requires WAV headers.
+    """
+    import json
     import struct
 
     from fastapi import Request, Response
     from fastapi.responses import StreamingResponse
+
+    FRAME_AUDIO = b"\x01"
+    FRAME_META = b"\x02"
 
     body = await request.body()
     if not body:
@@ -838,6 +853,10 @@ async def process_web_stream_binary(request: Request):
     system_prompt = request.headers.get("x-system-prompt")
     service = SpeechToSpeechService()
 
+    def _frame(frame_type: bytes, payload: bytes) -> bytes:
+        """Build a typed frame: [4-byte len][1-byte type][payload]"""
+        return struct.pack(">I", 1 + len(payload)) + frame_type + payload
+
     def gen():
         try:
             for chunk in service.process_streaming.remote_gen(
@@ -848,14 +867,48 @@ async def process_web_stream_binary(request: Request):
                 sample_width=sample_width,
                 raw_input=True,
                 compress_output=False,
+                raw_pcm_output=False,  # Browser needs WAV headers
             ):
-                if chunk.get("type") == "audio":
+                chunk_type = chunk.get("type", "")
+                if chunk_type == "transcription":
+                    meta = json.dumps({
+                        "type": "transcription",
+                        "transcription": chunk.get("transcription", ""),
+                        "asr_time": chunk.get("asr_time", 0),
+                    }).encode()
+                    yield _frame(FRAME_META, meta)
+                elif chunk_type == "audio":
                     audio = chunk.get("audio", b"")
-                    yield struct.pack(">I", len(audio)) + audio
-                elif chunk.get("type") == "error":
+                    text = chunk.get("text", "")
+                    if audio:
+                        yield _frame(FRAME_AUDIO, audio)
+                    if text:
+                        meta = json.dumps({
+                            "type": "text",
+                            "text": text,
+                        }).encode()
+                        yield _frame(FRAME_META, meta)
+                elif chunk_type == "done":
+                    meta = json.dumps({
+                        "type": "done",
+                        "response": chunk.get("response", ""),
+                        "metrics": chunk.get("metrics", {}),
+                    }).encode()
+                    yield _frame(FRAME_META, meta)
+                elif chunk_type == "error":
+                    meta = json.dumps({
+                        "type": "error",
+                        "error": chunk.get("error", "Unknown"),
+                    }).encode()
+                    yield _frame(FRAME_META, meta)
                     break
             yield struct.pack(">I", 0)
-        except Exception:
+        except Exception as e:
+            try:
+                meta = json.dumps({"type": "error", "error": str(e)}).encode()
+                yield _frame(FRAME_META, meta)
+            except Exception:
+                pass
             yield struct.pack(">I", 0)
 
     return StreamingResponse(gen(), media_type="application/octet-stream")
