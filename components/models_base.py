@@ -105,8 +105,10 @@ class StreamingSentenceChunker:
     """
     Ultra-low-latency sentence chunker for streaming LLM → TTS pipeline.
     
-    OPTIMIZED FOR TTFA < 1.0s:
-    - Aggressive early breaks on clauses
+    OPTIMIZED FOR TTFA < 500ms:
+    - FIRST CHUNK: ultra-aggressive — yield at 3+ chars on sentence boundary
+      (catches "Sure!", "Yes.", "OK!" immediately)
+    - Subsequent chunks: normal min_chars threshold
     - Scan from END of buffer (O(1) for common case)
     - Yield as soon as we have a speakable chunk
     
@@ -116,47 +118,68 @@ class StreamingSentenceChunker:
     - Force yield at max_chars (never wait too long)
     """
     
+    FIRST_CHUNK_MIN = 3  # Ultra-aggressive: "Hi!" = 3 chars
+    
     def __init__(self, min_chars: int = 10, max_chars: int = 100):
         self.buffer = ""
         self.min_chars = min_chars
         self.max_chars = max_chars
         self.sentence_endings = ".!?"
         self.clause_breaks = ",:;—"
+        self._first_chunk = True
     
     def add_token(self, token: str) -> Optional[str]:
         """
         Add a token and return a complete chunk if available.
-        OPTIMIZED: Scans from end for O(1) common case.
+        FIRST CHUNK uses ultra-low threshold for fastest TTFA.
         Returns None if still buffering.
         """
         self.buffer += token
         buf_len = len(self.buffer)
         
-        if buf_len < self.min_chars:
+        # FIRST CHUNK: be ultra-aggressive to minimize TTFA
+        # Yield as soon as we see a sentence ending with 3+ chars
+        if self._first_chunk and buf_len >= self.FIRST_CHUNK_MIN:
+            for i in range(buf_len - 1, self.FIRST_CHUNK_MIN - 2, -1):
+                if self.buffer[i] in self.sentence_endings:
+                    sentence = self.buffer[:i+1].strip()
+                    self.buffer = self.buffer[i+1:].lstrip()
+                    if sentence:
+                        self._first_chunk = False
+                        return sentence
+        
+        effective_min = self.FIRST_CHUNK_MIN if self._first_chunk else self.min_chars
+        
+        if buf_len < effective_min:
             return None
         
-        for i in range(buf_len - 1, self.min_chars - 2, -1):
+        for i in range(buf_len - 1, effective_min - 2, -1):
             if self.buffer[i] in self.sentence_endings:
                 sentence = self.buffer[:i+1].strip()
                 self.buffer = self.buffer[i+1:].lstrip()
-                return sentence
+                if sentence:
+                    self._first_chunk = False
+                    return sentence
         
         if buf_len >= self.min_chars + 5:
             for i in range(buf_len - 1, self.min_chars - 2, -1):
                 if self.buffer[i] in self.clause_breaks:
                     sentence = self.buffer[:i+1].strip()
                     self.buffer = self.buffer[i+1:].lstrip()
-                    return sentence
+                    if sentence:
+                        self._first_chunk = False
+                        return sentence
         
         if buf_len >= self.max_chars:
             last_space = self.buffer.rfind(" ", self.min_chars, self.max_chars)
             if last_space > 0:
                 sentence = self.buffer[:last_space].strip()
                 self.buffer = self.buffer[last_space:].lstrip()
-                return sentence
             else:
                 sentence = self.buffer[:self.max_chars].strip()
                 self.buffer = self.buffer[self.max_chars:].lstrip()
+            if sentence:
+                self._first_chunk = False
                 return sentence
         
         return None

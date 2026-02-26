@@ -23,7 +23,8 @@ SAMPLE_RATE = 16000
 FRAME_DURATION_MS = 30
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)
 VAD_LEVEL = 3
-SILENCE_THRESHOLD_MS = 800
+SILENCE_THRESHOLD_MS = 350  # Aggressive: was 800ms — saves ~450ms TTFA
+TRAILING_SILENCE_FRAMES = 3  # Was 7 — less dead air captured
 MAX_RECORD_SECS = 8
 
 # Streaming audio player for low-latency playback
@@ -79,7 +80,7 @@ class StreamingAudioPlayer:
     
     def add_chunk(self, audio_bytes: bytes):
         """
-        Add audio chunk to playback queue. Returns IMMEDIATELY.
+        Add WAV audio chunk to playback queue. Returns IMMEDIATELY.
         This is the key to low-latency streaming - we don't block on playback.
         """
         # Ensure playback thread is running
@@ -101,6 +102,22 @@ class StreamingAudioPlayer:
             
         except Exception as e:
             print(f"⚠️ Audio chunk error: {e}")
+
+    def add_chunk_pcm(self, pcm_bytes: bytes, sample_rate: int = 24000):
+        """
+        Add RAW PCM int16 chunk — zero parsing overhead.
+        This is the fast path for streaming mode.
+        """
+        self.start()
+        try:
+            data = np.frombuffer(pcm_bytes, dtype=np.int16)
+            if sample_rate != self.sample_rate:
+                from scipy import signal
+                num_samples = int(len(data) * self.sample_rate / sample_rate)
+                data = signal.resample(data, num_samples).astype(np.int16)
+            self.audio_queue.put(data)
+        except Exception as e:
+            print(f"⚠️ PCM chunk error: {e}")
     
     def play_blocking(self, audio_bytes: bytes):
         """Play audio synchronously (for non-streaming mode only)."""
@@ -216,7 +233,7 @@ class AudioRecorder:
                             elif time.time() - self.silence_start > SILENCE_THRESHOLD_MS / 1000.0:
                                 print("🛑 Silence detected, stopping recording.")
                                 break
-                            if self.trailing_silence_frames < 7:
+                            if self.trailing_silence_frames < TRAILING_SILENCE_FRAMES:
                                 audio_buffer.append(data)
                                 self.trailing_silence_frames += 1
                         else:
@@ -278,7 +295,15 @@ def play_audio(audio_bytes):
     sd.play(data, samplerate)
     sd.wait()
 
+def has_speech_pcm(pcm_data: np.ndarray, sample_rate: int = 16000, min_rms: float = 200.0, min_secs: float = 0.4) -> bool:
+    """Check for speech directly on raw PCM numpy array — no WAV parse needed."""
+    if len(pcm_data) / sample_rate < min_secs:
+        return False
+    rms = np.sqrt(np.mean(pcm_data.astype(np.float32) ** 2))
+    return rms >= min_rms
+
 def has_speech(wav_bytes: bytes, min_rms: float = 200.0, min_secs: float = 0.4) -> bool:
+    """Legacy: check for speech from WAV bytes."""
     try:
         sr, data = wavfile.read(io.BytesIO(wav_bytes))
     except Exception:
@@ -356,20 +381,23 @@ def main():
     Real-time speech-to-speech client.
     
     Modes:
-        --streaming: TRUE STREAMING - audio plays while LLM is still generating
-                     Achieves sub-2s first-audio latency
-        (default):   BATCH - waits for full response before playing
+        (default):   TRUE STREAMING - audio plays while LLM is still generating
+                     Achieves sub-1s first-audio latency
+        --batch:     BATCH - waits for full response before playing (legacy)
     """
     parser = argparse.ArgumentParser(description="Speech-to-Speech Client")
-    parser.add_argument("--streaming", action="store_true", 
-                        help="Enable TRUE streaming mode for lowest latency")
+    parser.add_argument("--batch", action="store_true",
+                        help="Use legacy BATCH mode (slower, waits for full response)")
     parser.add_argument("--http-url", type=str, default=None)
     parser.add_argument("--http-stream-url", type=str, default=None)
     parser.add_argument("--legacy-compression", action="store_true")
     args = parser.parse_args()
+    # Streaming is now the default — invert the flag
+    args.streaming = not args.batch
     
     print("🚀 Starting real-time speech-to-speech client...")
-    print(f"   Mode: {'STREAMING (low latency)' if args.streaming else 'BATCH'}")
+    print(f"   Mode: {'STREAMING (low latency)' if args.streaming else 'BATCH (legacy)'}")
+    print(f"   Silence threshold: {SILENCE_THRESHOLD_MS}ms")
     use_http = bool(args.http_url or args.http_stream_url)
     print(f"   Transport: {'HTTP binary' if use_http else 'Modal RPC'}")
     
@@ -414,28 +442,34 @@ def main():
             if len(mic_audio) == 0:
                 continue
 
-            # Create WAV container for the raw PCM data
-            wav_buffer = io.BytesIO()
-            wavfile.write(wav_buffer, SAMPLE_RATE, mic_audio)
-            wav_bytes = wav_buffer.getvalue()
-            if not has_speech(wav_bytes):
+            # Speech check directly on raw PCM — no WAV wrapping overhead
+            if not has_speech_pcm(mic_audio, SAMPLE_RATE):
                 print("🔇 No speech detected — skipping")
                 continue
-            payload_bytes = wav_bytes
-            if not use_http and args.legacy_compression:
-                print(f"📦 Original WAV: {len(wav_bytes)} bytes")
-                compressed_bytes = compress_wav_to_mp3(wav_bytes)
-                print(f"📦 Compressed MP3: {len(compressed_bytes)} bytes")
-                compression_ratio = get_compression_ratio(len(wav_bytes), len(compressed_bytes))
-                print(f"📦 Compression ratio: {compression_ratio:.1f}x")
-                payload_bytes = compressed_bytes
+
+            # For streaming raw path: send raw PCM bytes directly (no WAV container)
+            if args.streaming and not args.legacy_compression:
+                payload_bytes = mic_audio.tobytes()
+            else:
+                # Legacy/batch path: wrap in WAV
+                wav_buffer = io.BytesIO()
+                wavfile.write(wav_buffer, SAMPLE_RATE, mic_audio)
+                wav_bytes = wav_buffer.getvalue()
+                payload_bytes = wav_bytes
+                if not use_http and args.legacy_compression:
+                    print(f"📦 Original WAV: {len(wav_bytes)} bytes")
+                    compressed_bytes = compress_wav_to_mp3(wav_bytes)
+                    print(f"📦 Compressed MP3: {len(compressed_bytes)} bytes")
+                    compression_ratio = get_compression_ratio(len(wav_bytes), len(compressed_bytes))
+                    print(f"📦 Compression ratio: {compression_ratio:.1f}x")
+                    payload_bytes = compressed_bytes
             
             # 2. Process through pipeline (ASR -> LLM -> TTS)
             t0 = time.time()
             
             if args.streaming:
                 # STREAMING MODE: Play audio chunks as they arrive
-                # This achieves sub-2s first-audio latency
+                # Optimized for sub-1s first-audio latency
                 print("🚀 Processing (streaming)...")
                 
                 transcription = ""
@@ -475,10 +509,18 @@ def main():
                                 print(f"   ⚡ First audio at {first_audio_received:.2f}s")
                             chunk_audio = chunk.get("audio", b"")
                             text = chunk.get("text", "")
-                            if chunk.get("compressed", False):
-                                chunk_audio = decompress_mp3_to_wav(chunk_audio)
-                            print(f"   🔊 Queued: \"{text[:40]}...\"")
-                            player.add_chunk(chunk_audio)
+                            sr = chunk.get("sample_rate", 24000)
+                            is_pcm = chunk.get("pcm", False)
+                            if is_pcm:
+                                # Fast path: raw PCM — no WAV parse overhead
+                                print(f"   🔊 Queued PCM: \"{text[:40]}...\"")
+                                player.add_chunk_pcm(chunk_audio, sample_rate=sr)
+                            else:
+                                # Legacy path: WAV-wrapped audio
+                                if chunk.get("compressed", False):
+                                    chunk_audio = decompress_mp3_to_wav(chunk_audio)
+                                print(f"   🔊 Queued: \"{text[:40]}...\"")
+                                player.add_chunk(chunk_audio)
                             audio_chunks_played += 1
                         elif chunk_type == "done":
                             response = chunk.get("response", "")

@@ -242,9 +242,17 @@ def resolve_llm_model(requested: Optional[str], config: ModelConfig) -> Optional
 
 
 def stream_tts_sentence(
-    tts, sentence: str, using_tts_stream: bool, state: dict, compress: bool = True
+    tts, sentence: str, using_tts_stream: bool, state: dict,
+    compress: bool = True, raw_pcm: bool = False,
 ):
-    """Stream TTS for a single sentence. Set compress=False for raw output."""
+    """
+    Stream TTS for a single sentence.
+
+    Args:
+        raw_pcm:  If True, yield raw PCM int16 bytes (no WAV header, no MP3).
+                  This is the fast path — eliminates WAV wrapping + MP3 encode.
+        compress: Legacy flag; ignored when raw_pcm=True.
+    """
     import time
 
     t_tts = time.time()
@@ -256,40 +264,73 @@ def stream_tts_sentence(
         sub_index = 0
         chunk_start = time.time()
         for wav_chunk, sample_rate, is_last in tts.synthesize_stream(sentence):
-            chunk_duration = (len(wav_chunk) - 44) / (sample_rate * 2)
-            state["total_duration"] += chunk_duration
-            if compress:
-                wav_chunk, compressed = compress_if_large(wav_chunk)
+            if raw_pcm:
+                # Strip WAV header (44 bytes) → raw PCM
+                pcm_data = wav_chunk[44:] if wav_chunk[:4] == b"RIFF" else wav_chunk
+                chunk_duration = len(pcm_data) / (sample_rate * 2)
+                state["total_duration"] += chunk_duration
+                yield {
+                    "type": "audio",
+                    "audio": pcm_data,
+                    "pcm": True,
+                    "sample_rate": sample_rate,
+                    "text": sentence if sub_index == 0 else "",
+                    "chunk_index": state["chunk_index"],
+                    "sub_index": sub_index,
+                    "chunk_duration": chunk_duration,
+                    "compressed": False,
+                    "is_last_sub": is_last,
+                }
             else:
-                compressed = False
-            yield {
-                "type": "audio",
-                "audio": wav_chunk,
-                "text": sentence if sub_index == 0 else "",
-                "chunk_index": state["chunk_index"],
-                "sub_index": sub_index,
-                "chunk_duration": chunk_duration,
-                "compressed": compressed,
-                "is_last_sub": is_last,
-            }
+                chunk_duration = (len(wav_chunk) - 44) / (sample_rate * 2)
+                state["total_duration"] += chunk_duration
+                if compress:
+                    wav_chunk, compressed = compress_if_large(wav_chunk)
+                else:
+                    compressed = False
+                yield {
+                    "type": "audio",
+                    "audio": wav_chunk,
+                    "text": sentence if sub_index == 0 else "",
+                    "chunk_index": state["chunk_index"],
+                    "sub_index": sub_index,
+                    "chunk_duration": chunk_duration,
+                    "compressed": compressed,
+                    "is_last_sub": is_last,
+                }
             sub_index += 1
         state["total_tts_time"] += time.time() - chunk_start
     else:
         audio_chunk, chunk_duration, chunk_time = tts.synthesize(sentence)
         state["total_tts_time"] += chunk_time
         state["total_duration"] += chunk_duration
-        if compress:
-            audio_chunk, compressed = compress_if_large(audio_chunk)
+        if raw_pcm:
+            # Strip WAV header → raw PCM
+            pcm_data = audio_chunk[44:] if audio_chunk[:4] == b"RIFF" else audio_chunk
+            sr = getattr(tts, "sample_rate", 24000)
+            yield {
+                "type": "audio",
+                "audio": pcm_data,
+                "pcm": True,
+                "sample_rate": sr,
+                "text": sentence,
+                "chunk_index": state["chunk_index"],
+                "chunk_duration": chunk_duration,
+                "compressed": False,
+            }
         else:
-            compressed = False
-        yield {
-            "type": "audio",
-            "audio": audio_chunk,
-            "text": sentence,
-            "chunk_index": state["chunk_index"],
-            "chunk_duration": chunk_duration,
-            "compressed": compressed,
-        }
+            if compress:
+                audio_chunk, compressed = compress_if_large(audio_chunk)
+            else:
+                compressed = False
+            yield {
+                "type": "audio",
+                "audio": audio_chunk,
+                "text": sentence,
+                "chunk_index": state["chunk_index"],
+                "chunk_duration": chunk_duration,
+                "compressed": compressed,
+            }
 
     print(f'   ✓ Chunk {state["chunk_index"]}: "{sentence[:40]}..."')
     state["chunk_index"] += 1
@@ -383,6 +424,7 @@ class SpeechToSpeechService:
         sample_width: int = 2,
         raw_input: bool = False,
         compress_output: bool = True,
+        raw_pcm_output: bool = True,
     ):
         """
         TRUE STREAMING speech-to-speech pipeline.
@@ -392,12 +434,14 @@ class SpeechToSpeechService:
         100-200 ms off perceived latency.
 
         Args:
-            raw_input: If True, treat input as raw PCM and wrap to WAV.
-            compress_output: If True, compress large audio chunks for transfer.
+            raw_input:      If True, treat input as raw PCM and wrap to WAV.
+            raw_pcm_output: If True (default), yield raw PCM chunks (fastest).
+                            Overrides compress_output.
+            compress_output: Legacy flag; ignored when raw_pcm_output=True.
 
         Yield contract:
           {"type": "transcription", ...}
-          {"type": "audio", "audio": <bytes>, "compressed": bool, ...}  (N times)
+          {"type": "audio", "audio": <bytes>, "pcm": bool, ...}  (N times)
           {"type": "done", "metrics": {...}}
         """
         import time
@@ -458,6 +502,7 @@ class SpeechToSpeechService:
                 yield from stream_tts_sentence(
                     self.tts, complete_sentence, using_tts_stream, state,
                     compress=compress_output,
+                    raw_pcm=raw_pcm_output,
                 )
 
         llm_time = time.time() - llm_start
@@ -467,6 +512,7 @@ class SpeechToSpeechService:
             yield from stream_tts_sentence(
                 self.tts, remaining, using_tts_stream, state,
                 compress=compress_output,
+                raw_pcm=raw_pcm_output,
             )
 
         total_time = time.time() - t_start
@@ -480,7 +526,7 @@ class SpeechToSpeechService:
         print(f"  TTS total time:  {state['total_tts_time']:.2f}s")
         print(
             f"  First audio at:  {state['first_audio_time']:.2f}s "
-            f"{'✅' if state['first_audio_time'] and state['first_audio_time'] < 1.5 else '⚠️  >1.5s!'}"
+            f"{'✅' if state['first_audio_time'] and state['first_audio_time'] < 0.8 else '⚠️  >0.8s!'}"
         )
         print(f"  Chunks sent:     {state['chunk_index']}")
         print(f"  Total audio:     {state['total_duration']:.1f}s")
@@ -672,6 +718,7 @@ def process_speech_streaming_raw(
         sample_width=sample_width,
         raw_input=True,
         compress_output=False,
+        raw_pcm_output=True,
     ):
         yield chunk
 

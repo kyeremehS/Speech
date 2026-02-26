@@ -39,8 +39,9 @@ class Llama31GroqLLM(LLMModel):
             stream = self.client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 max_tokens=150,
-                temperature=0.7,
+                temperature=0.6,
                 stream=True,
+                stop=["\n\n", "User:", "Human:"],
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_input}
@@ -134,7 +135,7 @@ class Qwen3LLM(LLMModel):
         generation_kwargs = dict(
             **inputs,
             max_new_tokens=150,
-            temperature=0.7,
+            temperature=0.6,
             top_p=0.9,
             do_sample=True,
             pad_token_id=self.tokenizer.eos_token_id,

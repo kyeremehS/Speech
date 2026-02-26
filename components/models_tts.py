@@ -42,11 +42,6 @@ class ChatterboxTTS(TTSModel):
     def model_name(self) -> str:
         return "ChatterboxTTS Turbo"
 
-   
-    
-
-    
-
 class _InworldTTSBase(TTSModel):
     """
     Inworld TTS-1.5 Base — shared implementation for Max and Mini.
@@ -144,9 +139,10 @@ class _InworldTTSBase(TTSModel):
         import time
 
         t0 = time.time()
-        all_pcm = b""
+        all_pcm = bytearray()
         for pcm_chunk, _ in self._stream_raw_pcm(text):
-            all_pcm += pcm_chunk
+            all_pcm.extend(pcm_chunk)
+        all_pcm = bytes(all_pcm)
         wav = self._pcm_to_wav(all_pcm, self.sample_rate)
         duration = len(all_pcm) / (self.sample_rate * 2)
         return wav, duration, time.time() - t0
